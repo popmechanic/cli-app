@@ -1,31 +1,30 @@
 ---
-name: cli-app
+name: loom
 description: >
-  Build web applications that use Claude Code CLI (`claude -p`) as the runtime —
-  a server spawns Claude processes that read files, run commands, and return
-  structured output, while a custom frontend renders results as rich UI
-  (dashboards, charts, timelines, annotated views). Use when a user wants a web
-  interface where Claude is the backend: analytics dashboards, monitoring tools,
-  code review UIs, data explorers, or any app calling `claude -p` instead of a
-  traditional API. Triggers: "build an app that uses Claude", "web dashboard
-  powered by Claude", "wrap claude -p", "Claude as backend", or any web app
-  needing Claude's agentic capabilities (file access, tool use, streaming)
-  through a purpose-built interface. NOT for Anthropic API apps, chat replicas,
-  or standard web apps without an AI runtime.
+  Build applications where Claude Code CLI (`claude -p`) is the runtime.
+  A server spawns Claude processes that read files, run commands, and return
+  structured output. A custom interface renders the results in whatever form
+  makes sense. Use when a user wants to build something with Claude as the
+  engine: any app that calls `claude -p` or uses the Agent SDK instead of a
+  traditional API backend. Triggers: "build an app that uses Claude",
+  "make something powered by Claude", "wrap claude -p", "Claude as backend",
+  "Claude as runtime", or any application needing Claude's agentic capabilities
+  (file access, tool use, streaming) through a purpose-built interface. NOT for
+  Anthropic API apps, chat replicas, or standard web apps without an AI runtime.
 ---
 
-# CLI App: Web Interfaces to Claude Code
+# Loom: Applications on the Claude Code Runtime
 
-You're helping someone build a web application where Claude Code is the runtime —
-not a helper writing React components, but the actual backend engine that powers
-the application's intelligence. The web frontend talks to a server that spawns
+You're helping someone build an application where Claude Code is the runtime —
+not a helper writing React components, but the actual engine that powers
+the application's intelligence. The interface talks to a server that spawns
 `claude -p` processes or uses the Agent SDK, streaming results back to the browser.
 
 This is a different posture than normal web development. Normally, the backend
 is a database and some business logic. Here, the backend is Claude — an agent
 that can read files, run commands, search code, and reason about complex tasks.
-The frontend's job is to give that agent a purpose-built interface that makes
-its capabilities useful for a specific domain.
+The interface's job is to give that agent a form — to decide what the output
+looks like and how someone interacts with it.
 
 ## Why This Matters
 
@@ -33,10 +32,10 @@ Most "AI-powered" web apps just wrap a chat API. They put a text box on screen,
 send messages to an LLM, and show the response. That's a chat replica.
 
 Claude Code is not a chat API. It's an agentic runtime with filesystem access,
-tool use, multi-turn sessions, structured output, and streaming. Building a web
-interface to Claude Code means designing UIs that expose these capabilities in
-ways that make sense for specific use cases — not just conversations, but
-workflows, dashboards, pipelines, and interactive tools.
+tool use, multi-turn sessions, structured output, and streaming. Building an
+interface on top of Claude Code means designing something that exposes these
+capabilities in ways that make sense — not just conversations, but whatever
+interaction paradigm fits what the person is trying to do.
 
 The question to help users explore is: **what would you build if your backend
 could read files, run code, search the web, coordinate multiple agents, and
@@ -44,21 +43,19 @@ stream its reasoning to the browser in real time?**
 
 ## The Architecture
 
-Every Claude Code web app has the same basic shape:
+Every Loom app has the same basic shape:
 
 ```
 ┌──────────────┐     HTTP/WS      ┌──────────────┐    stdio/SDK    ┌──────────────┐
-│   Browser    │ ◄──────────────► │  Node Server  │ ◄────────────► │  claude -p   │
+│   Interface  │ ◄──────────────► │  Node Server  │ ◄────────────► │  claude -p   │
 │  (React/HTML)│                  │  (Express/etc) │                │  (Agent SDK) │
 └──────────────┘                  └──────────────┘                └──────────────┘
      UI layer                      Bridge layer                    Runtime layer
 ```
 
-**Browser**: The custom UI. Could be anything — a dashboard, a Kanban board,
-a code review tool, a data explorer, a monitoring panel. Whatever makes sense
-for the use case.
+**Interface**: The custom UI. Whatever makes sense for what's being built.
 
-**Node Server**: The bridge. Receives requests from the browser, spawns Claude
+**Node Server**: The bridge. Receives requests from the interface, spawns Claude
 processes, parses output, streams results back. This is where you handle auth,
 rate limiting, session management, and the mapping between web concepts and
 Claude invocations.
@@ -87,23 +84,18 @@ When someone comes to you with an idea, walk through these design questions.
 Don't dump them all at once — have a natural conversation. But cover this ground
 before you start building:
 
-### 1. What does the user see and do?
+### 1. What does the person see and do?
 
-Get concrete about the interface, not the AI. What's the screen layout? What does
-the user click? What appears when Claude is working? What does the final output
+Get concrete about the interface, not the AI. What's the layout? What does
+someone click? What appears when Claude is working? What does the final output
 look like?
 
-Good: "A split-pane view — file tree on the left, code on the right, and a
-review panel at the bottom that fills in as Claude analyzes each file."
-
-Bad: "An AI that reviews code." (Too vague — no interface design.)
-
-Ask: "Walk me through the screen. What does someone see when they open this app?
+Ask: "Walk me through the screen. What does someone see when they open this?
 What do they do first? What happens next?"
 
 ### 2. What's the interaction model?
 
-How does the user's action translate to a Claude invocation?
+How does the person's action translate to a Claude invocation?
 
 | Interaction | Claude Pattern |
 |-------------|----------------|
@@ -111,11 +103,11 @@ How does the user's action translate to a Claude invocation?
 | Watch progress in real-time | Stream-JSON → SSE to browser |
 | Multi-step workflow with state | Session-based (`--session-id` + `--continue`) |
 | Concurrent analysis of multiple items | Parallel `claude -p` processes |
-| User steers while Claude works | Bidirectional streaming via WebSocket |
+| Person steers while Claude works | Bidirectional streaming via WebSocket |
 
 ### 3. What does Claude actually do?
 
-Map each user action to what Claude needs behind the scenes:
+Map each action to what Claude needs behind the scenes:
 
 - **What tools?** Read-only analysis (`Read,Glob,Grep`) vs. modification (`Write,Edit,Bash`)
   vs. no tools at all (`--tools ""` for pure reasoning)
@@ -125,14 +117,13 @@ Map each user action to what Claude needs behind the scenes:
 
 ### 4. How should the output render?
 
-This is where web interfaces shine over CLIs. You can render Claude's structured
+This is where custom interfaces shine over CLIs. You can render Claude's structured
 output as rich UI:
 
-- JSON schema with `issues: [{file, line, severity, message}]` → render as an
-  annotated code view with inline markers
-- Schema with `{nodes: [], edges: []}` → render as an interactive graph
-- Schema with `{sections: [{title, content, status}]}` → render as a progress dashboard
-- Stream-JSON events → animate a typing indicator, progress bar, or live log
+- JSON schema with typed arrays → render as cards, lists, timelines, visualizations
+- Schema with nodes and edges → render as an interactive graph
+- Schema with sections and status → render as a progress view
+- Stream-JSON events → animate a progress indicator or live log
 
 Design the JSON schema to match the UI components you want to render. The schema
 IS your API contract between Claude and the frontend.
@@ -152,7 +143,7 @@ Web apps add security concerns that CLIs don't have:
 | Need | Model | Why |
 |------|-------|-----|
 | Fast responses (<3s) | `haiku` | Classification, extraction, routing |
-| Good quality, reasonable speed | `sonnet` | Default for most web apps |
+| Good quality, reasonable speed | `sonnet` | Default for most apps |
 | Best reasoning | `opus` | Complex analysis, code generation |
 | Reliability | `--fallback-model haiku` | Auto-fallback on overload |
 
@@ -162,7 +153,7 @@ immediately, even when using slower models.
 ## Building It
 
 Default to **Node.js/TypeScript** with **Express** for the server and plain
-**HTML/CSS/JS** or **React** for the frontend, unless the user prefers otherwise.
+**HTML/CSS/JS** or **React** for the frontend, unless the person prefers otherwise.
 
 ### The Server Layer
 
@@ -173,7 +164,7 @@ Here are the server patterns to reach for:
 
 #### Pattern: REST Endpoint (One-Shot)
 
-User clicks a button → server calls Claude → returns JSON.
+Someone triggers an action → server calls Claude → returns JSON.
 
 ```typescript
 import express from "express";
@@ -213,7 +204,7 @@ app.post("/api/analyze", (req, res) => {
 
 #### Pattern: SSE Streaming
 
-User triggers a task → server streams Claude's output token-by-token.
+Someone triggers a task → server streams Claude's output token-by-token.
 
 ```typescript
 app.get("/api/stream", (req, res) => {
@@ -298,7 +289,7 @@ wss.on("connection", (ws) => {
 
 #### Pattern: Background Job with Progress
 
-Long-running task that reports progress to the browser.
+Long-running task that reports progress.
 
 ```typescript
 const jobs = new Map<string, { status: string; result?: any }>();
@@ -388,14 +379,13 @@ source.onmessage = (e) => {
 #### Structured Result Rendering
 
 ```javascript
-// Claude returns { findings: [{title, severity, description}], summary }
-// Render as a rich card layout, not a chat message
-function renderFindings(data) {
-  return data.findings.map(f => `
-    <div class="finding finding--${f.severity}">
-      <span class="badge">${f.severity}</span>
-      <h3>${f.title}</h3>
-      <p>${f.description}</p>
+// Claude returns structured data via JSON schema
+// Render it as whatever UI makes sense — not a chat message
+function renderResults(data) {
+  return data.items.map(item => `
+    <div class="item item--${item.type}">
+      <h3>${item.title}</h3>
+      <p>${item.description}</p>
     </div>
   `).join("");
 }
@@ -409,35 +399,21 @@ When you build the app, produce:
 2. **`public/index.html`** — The frontend (inline styles/scripts for simplicity,
    or a small React app for complex UIs)
 3. **`package.json`** — Dependencies and start script
-4. **A one-liner to run it** — so the user can verify it works immediately
+4. **A one-liner to run it** — so the person can verify it works immediately
 
 For simple apps, a single `server.ts` serving a static `index.html` is ideal.
 For complex UIs, scaffold a React frontend with a separate server.
 
 After generating, offer to start the server and open it in the browser together.
-Then iterate based on what the user sees.
+Then iterate based on what the person sees.
 
-## Thinking Beyond Chat Replicas
+## The Possibility Space
 
-The most interesting Claude Code web apps are NOT chat interfaces in a browser.
-They're interfaces that couldn't exist without an agentic runtime:
+The most interesting Loom apps are not chat interfaces in a browser.
+They're things that couldn't exist without an agentic runtime — applications
+where the backend can read, reason, and act on context that traditional APIs
+can't access.
 
-- A **code review dashboard** that shows a file tree, highlights issues inline,
-  and lets you click "fix" to have Claude apply the fix — all in the browser
-- A **data explorer** where you upload a CSV and get an interactive dashboard
-  with charts, filters, and natural language queries — Claude generates the
-  visualization code on the fly
-- A **incident commander** that monitors logs, correlates alerts, and shows
-  a live timeline with suggested runbook actions
-- A **migration planner** that reads your codebase, shows a dependency graph,
-  and lets you drag-and-drop the migration order while Claude estimates risk
-- A **test lab** where you paste a function and Claude generates a battery of
-  edge cases, runs them, and shows pass/fail results in a test runner UI
-- A **documentation studio** that reads your source files and generates a
-  navigable doc site, with Claude filling in explanations for complex sections
-- A **deploy review board** that shows the diff, Claude's safety analysis,
-  staging test results, and a big green "Ship It" button
-
-Help users think in this direction. The question isn't "how do I put a chat
-box in a browser?" but "what interface would make this workflow 10x better
-if it had an intelligent agent behind it?"
+Help people think about what they actually want to make. The question isn't
+"how do I put a chat box in a browser?" but "what would this look like if
+there were an intelligence behind it?"

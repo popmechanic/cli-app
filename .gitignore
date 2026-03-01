@@ -1,5 +1,5 @@
 commit-storyteller/
-cli-app-workspace/
+loom-workspace/
 *.skill
 .DS_Store
 node_modules/

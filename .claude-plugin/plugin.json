@@ -1,11 +1,12 @@
 {
-  "name": "cli-app",
+  "name": "loom",
   "version": "1.0.0",
-  "description": "Build web applications that use Claude Code CLI (claude -p) as the runtime — servers spawn Claude processes while custom frontends render structured output as rich UI.",
+  "description": "Build applications where Claude Code CLI (claude -p) is the runtime — a server spawns Claude processes that read files, run commands, and return structured output, while a custom interface renders the results.",
   "author": {
     "name": "Marcus Estes"
   },
   "license": "MIT",
-  "homepage": "https://github.com/popmechanic/cli-app",
-  "repository": "https://github.com/popmechanic/cli-app"
+  "keywords": ["claude-code", "runtime", "cli", "agent", "structured-output"],
+  "homepage": "https://github.com/popmechanic/loom",
+  "repository": "https://github.com/popmechanic/loom"
 }
