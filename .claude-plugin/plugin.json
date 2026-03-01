@@ -5,5 +5,7 @@
   "author": {
     "name": "Marcus Estes"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "homepage": "https://github.com/popmechanic/cli-wrapper",
+  "repository": "https://github.com/popmechanic/cli-wrapper"
 }
