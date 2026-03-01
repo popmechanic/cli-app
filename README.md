@@ -7,7 +7,7 @@ Instead of a traditional API backend, a server spawns Claude processes that read
 ## Installation
 
 ```
-/plugin marketplace add marcusestes/cli-wrapper
+/plugin marketplace add popmechanic/cli-app
 /plugin install cli-app
 ```
 
