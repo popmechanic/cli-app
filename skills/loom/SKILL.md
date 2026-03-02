@@ -320,37 +320,42 @@ app.post("/api/stream", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-  );
+  // Heartbeat keeps connections alive through proxies (nginx, Cloudflare)
+  const heartbeat = setInterval(() => {
+    try { res.write(`:heartbeat\n\n`); } catch { clearInterval(heartbeat); }
+  }, 5000);
 
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
-    "--permission-mode", "dontAsk", "--max-budget-usd", "2", "--max-turns", "15",
+    "--permission-mode", "dontAsk", "--allowedTools", "Read,Glob,Grep,Bash",
+    "--max-budget-usd", "2", "--max-turns", "15",
     "--model", "sonnet", "--no-session-persistence",
     task
-  ], { env: cleanEnv });
+  ], { env: cleanEnv() });
 
-  proc.stdout.on("data", (chunk) => {
-    for (const line of chunk.toString().split("\n").filter(Boolean)) {
-      try {
-        const event = JSON.parse(line);
-        if (event.event?.delta?.text) {
-          res.write(`data: ${JSON.stringify({ type: "token", text: event.event.delta.text })}\n\n`);
-        } else if (event.type === "result") {
-          res.write(`data: ${JSON.stringify({ type: "done", cost: event.total_cost_usd })}\n\n`);
+  const parse = createStreamParser((event) => {
+    if (event.type === "assistant" && event.message?.content) {
+      for (const block of event.message.content) {
+        if (block.type === "tool_use") {
+          res.write(`data: ${JSON.stringify({ type: "tool", name: block.name })}\n\n`);
         }
-      } catch (e) {
-        // Skip malformed JSON lines — expected for partial stream chunks
       }
     }
+    if (event.event?.delta?.text) {
+      res.write(`data: ${JSON.stringify({ type: "token", text: event.event.delta.text })}\n\n`);
+    } else if (event.type === "result") {
+      res.write(`data: ${JSON.stringify({ type: "done", cost: event.total_cost_usd })}\n\n`);
+    }
   });
+
+  proc.stdout.on("data", parse);
 
   proc.stderr.on("data", (chunk) => {
     console.error(`[claude stderr] ${chunk.toString().trim()}`);
   });
 
   proc.on("close", (code) => {
+    clearInterval(heartbeat);
     if (code !== 0) {
       res.write(`data: ${JSON.stringify({ type: "error", message: `Claude exited with code ${code}` })}\n\n`);
     }
@@ -358,11 +363,12 @@ app.post("/api/stream", (req, res) => {
   });
 
   proc.on("error", (err) => {
+    clearInterval(heartbeat);
     res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
     res.end();
   });
 
-  req.on("close", () => proc.kill());
+  req.on("close", () => { clearInterval(heartbeat); proc.kill(); });
 });
 ```
 
