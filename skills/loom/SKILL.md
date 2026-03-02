@@ -175,6 +175,12 @@ to approve tool use or notice runaway costs. Three flags are non-negotiable:
 input. `dontAsk` auto-denies any tool not in `--allowedTools`, which is exactly
 what you want: predictable, unattended execution.
 
+**Critical:** `dontAsk` without `--allowedTools` means **no tools at all**.
+If your task needs file access, bash, or any other tool, you MUST pair
+`--permission-mode dontAsk` with `--allowedTools "Read,Bash,..."` or
+`--tools "Read,Bash,..."`. Omitting both gives you a Claude that can reason
+but can't act — and the failure is silent (no error, just missing results).
+
 **`--max-budget-usd`** — Every HTTP request that spawns Claude is an open
 checkbook. Set a hard cap: `0.50` for quick analysis with haiku, `1` for
 typical sonnet tasks, `3–5` for complex multi-turn sessions. Adjust to your
@@ -194,40 +200,58 @@ Every pattern also handles three failure modes:
   Always wrap JSON.parse in try/catch and check `parsed.is_error` before
   using `structured_output`.
 
-#### Flag Interaction
+#### Shared Utilities
 
-The safety flags above interact in ways that cause silent failures if
-combined wrong. Three clear paths:
+Every pattern below uses these two helpers. Define them once at the top of
+your server file.
 
-**No tools (pure reasoning):**
-```bash
-claude -p --tools "" --permission-mode dontAsk
+**`cleanEnv()`** — Remove nesting guards so `claude -p` can start.
+
+When your server runs inside Claude Code (which it often does during
+development), two environment variables — `CLAUDECODE` and
+`CLAUDE_CODE_ENTRYPOINT` — tell Claude it's already running and block nested
+processes. Remove exactly these two. Do NOT filter all `CLAUDE*` vars — that
+kills auth tokens (`CLAUDE_CODE_OAUTH_TOKEN`) and feature flags.
+
+```typescript
+function cleanEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+  return env;
+}
 ```
-`--tools ""` disables all tools. No `--allowedTools` needed — there's
-nothing to whitelist. `dontAsk` is still good practice (prevents hanging
-if a future flag change re-enables something).
 
-**Specific tools (whitelist):**
-```bash
-claude -p --allowedTools "Bash(git *)" "Read(/src/**)" --permission-mode dontAsk
+**`createStreamParser()`** — Buffer stdout chunks into complete JSON lines.
+
+TCP delivers data in arbitrary chunks. A JSON line can split across two
+`data` events. Without buffering, the first half fails `JSON.parse` and
+gets silently discarded. Both Julian and vibes-skill use this identical
+buffer-and-split pattern.
+
+```typescript
+function createStreamParser(onEvent: (event: any) => void) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  return (chunk: Buffer | Uint8Array) => {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        onEvent(JSON.parse(line));
+      } catch (err) {
+        console.warn("[claude stdout] JSON parse error:", (err as Error).message, line.slice(0, 200));
+      }
+    }
+  };
+}
 ```
-`--allowedTools` is a whitelist — only the listed tools run, everything else
-is auto-denied by `dontAsk`. Do NOT also pass `--tools` here. `--tools`
-filters what tools are *available*; `--allowedTools` filters what's
-*permitted*. Mixing them is confusing and leads to silent denials.
 
-**Broad tools in trusted env:**
-```bash
-claude -p --tools "Read,Glob,Grep,Bash" --permission-mode bypassPermissions
-```
-When `--allowedTools` can't express the constraint (e.g., "all Bash commands,
-not just a pattern"), use `--tools` to restrict availability and
-`bypassPermissions` to skip permission prompts entirely. Only use this in
-trusted environments (CI/CD, local dev tools) — never in user-facing servers.
-
-**The key rule:** `--allowedTools` is a whitelist that works with `dontAsk`.
-`--tools` is a filter that restricts availability. Don't mix the two mental
-models in the same invocation.
+Use `TextDecoder` with `{ stream: true }` — not `chunk.toString()` — to
+handle multi-byte UTF-8 characters that split across chunk boundaries.
 
 #### Pattern: REST Endpoint (One-Shot)
 
@@ -268,7 +292,7 @@ app.post("/api/analyze", (req, res) => {
       "-p", "--model", "sonnet", "--output-format", "json",
       "--permission-mode", "dontAsk", "--max-budget-usd", "1",
       "--json-schema", schema, "--tools", "", "--no-session-persistence"
-    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000, env });
+    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000, env: cleanEnv() });
 
     const parsed = JSON.parse(result);
     if (parsed.is_error) {
@@ -310,51 +334,35 @@ app.post("/api/stream", (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  const env = { ...process.env };
-  delete env.CLAUDECODE;       // triggers nested-session detection
-  delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
+  // Heartbeat keeps connections alive through proxies (nginx, Cloudflare)
+  const heartbeat = setInterval(() => {
+    try { res.write(`:heartbeat\n\n`); } catch { clearInterval(heartbeat); }
+  }, 5000);
 
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
-    "--permission-mode", "dontAsk", "--max-budget-usd", "2", "--max-turns", "15",
+    "--permission-mode", "dontAsk", "--allowedTools", "Read,Glob,Grep,Bash",
+    "--max-budget-usd", "2", "--max-turns", "15",
     "--model", "sonnet", "--no-session-persistence",
     task
-  ], { env });
+  ], { env: cleanEnv() });
 
-  proc.stdin.end();
-
-  let lineBuf = "";
-  let gotResult = false;
-
-  proc.stdout.on("data", (chunk) => {
-    lineBuf += chunk.toString();
-    const lines = lineBuf.split("\n");
-    lineBuf = lines.pop()!; // keep incomplete last line in buffer
-    for (const line of lines) {
-      if (!line) continue;
-      try {
-        const event = JSON.parse(line);
-        if (event.event?.delta?.text) {
-          res.write(`data: ${JSON.stringify({ type: "token", text: event.event.delta.text })}\n\n`);
-        } else if (event.type === "assistant" && event.message?.content) {
-          for (const block of event.message.content) {
-            if (block.type === "text" && block.text) {
-              res.write(`data: ${JSON.stringify({ type: "token", text: block.text })}\n\n`);
-            }
-          }
-        } else if (event.type === "result") {
-          gotResult = true;
-          if (event.is_error) {
-            res.write(`data: ${JSON.stringify({ type: "error", message: event.result })}\n\n`);
-          } else {
-            res.write(`data: ${JSON.stringify({ type: "done", cost: event.total_cost_usd })}\n\n`);
-          }
+  const parse = createStreamParser((event) => {
+    if (event.type === "assistant" && event.message?.content) {
+      for (const block of event.message.content) {
+        if (block.type === "tool_use") {
+          res.write(`data: ${JSON.stringify({ type: "tool", name: block.name })}\n\n`);
         }
-      } catch (e) {
-        // Skip malformed JSON lines — expected for partial stream chunks
       }
     }
+    if (event.event?.delta?.text) {
+      res.write(`data: ${JSON.stringify({ type: "token", text: event.event.delta.text })}\n\n`);
+    } else if (event.type === "result") {
+      res.write(`data: ${JSON.stringify({ type: "done", cost: event.total_cost_usd })}\n\n`);
+    }
   });
+
+  proc.stdout.on("data", parse);
 
   proc.stderr.on("data", (chunk) => {
     const msg = chunk.toString().trim();
@@ -362,20 +370,20 @@ app.post("/api/stream", (req, res) => {
   });
 
   proc.on("close", (code) => {
-    if (!gotResult) {
-      res.write(`data: ${JSON.stringify({ type: "error", message: code !== 0
-        ? `Claude exited with code ${code}`
-        : "Process finished without producing a result" })}\n\n`);
+    clearInterval(heartbeat);
+    if (code !== 0) {
+      res.write(`data: ${JSON.stringify({ type: "error", message: `Claude exited with code ${code}` })}\n\n`);
     }
     res.end();
   });
 
   proc.on("error", (err) => {
+    clearInterval(heartbeat);
     res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
     res.end();
   });
 
-  res.on("close", () => proc.kill());
+  req.on("close", () => { clearInterval(heartbeat); proc.kill(); });
 });
 ```
 
@@ -407,52 +415,42 @@ wss.on("connection", (ws) => {
   ws.on("message", (raw) => {
     const { action, payload } = JSON.parse(raw.toString());
 
-    const env = { ...process.env };
-    delete env.CLAUDECODE;       // triggers nested-session detection
-    delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
+    // Prevent concurrent subprocess spawns — one at a time per connection
+    if (activeProc) {
+      ws.send(JSON.stringify({ type: "error", message: "Processing in progress" }));
+      return;
+    }
 
     const proc = spawn("claude", [
       "-p", "--output-format", "stream-json", "--verbose",
-      "--permission-mode", "dontAsk", "--max-budget-usd", "3", "--max-turns", "20",
+      "--permission-mode", "dontAsk", "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
+      "--max-budget-usd", "3", "--max-turns", "20",
       "--session-id", sessionId, "--continue",
       "--model", "sonnet",
       payload.prompt
-    ], { env });
+    ], { env: cleanEnv() });
 
     proc.stdin.end();
     activeProc = proc;
     let lineBuf = "";
     let gotResult = false;
 
-    proc.stdout.on("data", (chunk) => {
-      lineBuf += chunk.toString();
-      const lines = lineBuf.split("\n");
-      lineBuf = lines.pop()!; // keep incomplete last line in buffer
-      for (const line of lines) {
-        if (!line) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event.event?.delta?.text) {
-            ws.send(JSON.stringify({ type: "token", text: event.event.delta.text }));
-          } else if (event.type === "assistant" && event.message?.content) {
-            for (const block of event.message.content) {
-              if (block.type === "text" && block.text) {
-                ws.send(JSON.stringify({ type: "token", text: block.text }));
-              }
-            }
-          } else if (event.type === "result") {
-            gotResult = true;
-            if (event.is_error) {
-              ws.send(JSON.stringify({ type: "error", message: event.result }));
-            } else {
-              ws.send(JSON.stringify({ type: "done", result: event }));
-            }
+    const parse = createStreamParser((event) => {
+      if (event.type === "assistant" && event.message?.content) {
+        for (const block of event.message.content) {
+          if (block.type === "tool_use") {
+            ws.send(JSON.stringify({ type: "tool", name: block.name, input: block.input }));
           }
-        } catch (e) {
-          // Skip malformed JSON lines — expected for partial stream chunks
         }
       }
+      if (event.event?.delta?.text) {
+        ws.send(JSON.stringify({ type: "token", text: event.event.delta.text }));
+      } else if (event.type === "result") {
+        ws.send(JSON.stringify({ type: "done", result: event }));
+      }
     });
+
+    proc.stdout.on("data", parse);
 
     proc.stderr.on("data", (chunk) => {
       const msg = chunk.toString().trim();
@@ -498,17 +496,13 @@ app.post("/api/jobs", (req, res) => {
   jobs.set(jobId, { status: "running" });
   res.json({ jobId });
 
-  const env = { ...process.env };
-  delete env.CLAUDECODE;       // triggers nested-session detection
-  delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
-
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
     "--model", "sonnet", "--max-turns", "20", "--max-budget-usd", "5",
     "--permission-mode", "dontAsk",
     "--tools", "Read,Bash,Glob,Grep",
     "--no-session-persistence"
-  ], { stdio: ["pipe", "pipe", "pipe"], env });
+  ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv() });
 
   proc.stdin.write(req.body.task);
   proc.stdin.end();
@@ -516,26 +510,13 @@ app.post("/api/jobs", (req, res) => {
   let lineBuf = "";
   let stderrBuf = "";
 
-  proc.stdout.on("data", (chunk) => {
-    lineBuf += chunk.toString();
-    const lines = lineBuf.split("\n");
-    lineBuf = lines.pop()!; // keep incomplete last line in buffer
-    for (const line of lines) {
-      if (!line) continue;
-      try {
-        const event = JSON.parse(line);
-        if (event.type === "result") {
-          if (event.is_error) {
-            jobs.set(jobId, { status: "failed", error: event.result });
-          } else {
-            jobs.set(jobId, { status: "complete", result: event });
-          }
-        }
-      } catch (e) {
-        // Skip malformed JSON lines — expected for partial stream chunks
-      }
+  const parse = createStreamParser((event) => {
+    if (event.type === "result") {
+      jobs.set(jobId, { status: "complete", result: event });
     }
   });
+
+  proc.stdout.on("data", parse);
 
   proc.stderr.on("data", (chunk) => {
     stderrBuf += chunk.toString();
@@ -573,17 +554,13 @@ app.post("/api/batch", async (req, res) => {
   const { items, task } = req.body;
   const TIMEOUT_MS = 30000;
 
-  const env = { ...process.env };
-  delete env.CLAUDECODE;       // triggers nested-session detection
-  delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
-
   const outcomes = await Promise.allSettled(
     items.map((item: string) => new Promise<any>((resolve, reject) => {
       const proc = spawn("claude", [
         "-p", "--model", "haiku", "--output-format", "json",
         "--permission-mode", "dontAsk", "--max-budget-usd", "0.50",
         "--json-schema", schema, "--tools", "", "--no-session-persistence"
-      ], { stdio: ["pipe", "pipe", "pipe"], env });
+      ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv() });
 
       const timeout = setTimeout(() => { proc.kill(); reject(new Error("Timeout")); }, TIMEOUT_MS);
       let stdout = "";
@@ -619,10 +596,49 @@ app.post("/api/batch", async (req, res) => {
 });
 ```
 
-**Don't do this:**
-- Don't use `execSync` with string concatenation for parallel items —
-  `spawn` with an args array is correct here. String interpolation with
-  user-provided content is an injection vector.
+#### Stream-JSON Event Types
+
+When using `--output-format stream-json --verbose`, Claude emits these event
+types as newline-delimited JSON. The patterns above use `createStreamParser`
+to handle buffering. Here's what each event type means and what to forward
+to the frontend:
+
+| Event Type | Shape | What It Means | Forward? |
+|------------|-------|---------------|----------|
+| `system` | `{type:"system", subtype:"init", session_id, model}` | Session started, model identified | Optional (show model) |
+| `stream_event` | `{type:"stream_event", event:{delta:{text}}}` | Incremental token | Yes (live text) |
+| `assistant` | `{type:"assistant", message:{content:[...]}}` | Complete message block with text and tool_use | Yes (tool progress) |
+| `tool_result` | `{type:"tool_result", tool_name, content, is_error}` | Tool completed | Optional (show result) |
+| `result` | `{type:"result", total_cost_usd, usage, is_error}` | Session complete | Yes (done + cost) |
+| `compact` | `{type:"compact"}` | Context window compacted | No (internal) |
+
+**Extracting tool use from `assistant` events:**
+
+```typescript
+if (event.type === "assistant" && event.message?.content) {
+  for (const block of event.message.content) {
+    if (block.type === "text") {
+      // Complete text block (not incremental — use stream_event for that)
+    } else if (block.type === "tool_use") {
+      // Claude is calling a tool: block.name, block.input
+      // Forward to frontend for progress indication
+    }
+  }
+}
+```
+
+Track tool use for progress estimation:
+
+```typescript
+let toolsUsed = 0;
+let hasEdited = false;
+// ... inside event handler:
+if (block.type === "tool_use") {
+  toolsUsed++;
+  if (block.name === "Edit" || block.name === "Write") hasEdited = true;
+}
+// Progress: hasEdited means nearly done, toolsUsed >= 3 means well underway
+```
 
 ### The Frontend Layer
 
@@ -812,6 +828,148 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 For long-running servers, consider a periodic sweep of your temp directory
 to catch orphaned files from crashed requests.
+
+### Advanced Patterns
+
+These patterns appear in production but aren't needed for every app. Reach
+for them when the basic patterns aren't enough.
+
+#### Structured Extraction (Async Haiku)
+
+For lightweight data extraction tasks — form field suggestions, entity
+parsing, classification — spawn a one-shot Haiku process with no tools
+and a JSON schema. Async with a timeout kill, unlike the synchronous
+`execFileSync` REST pattern.
+
+```typescript
+async function extract<T>(prompt: string, schema: object, timeoutMs = 30000): Promise<T> {
+  const proc = spawn("claude", [
+    "-p", "--model", "haiku", "--output-format", "json",
+    "--json-schema", JSON.stringify(schema),
+    "--tools", "", "--no-session-persistence",
+    "--permission-mode", "dontAsk", "--max-budget-usd", "0.25"
+  ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv() });
+
+  proc.stdin.write(prompt);
+  proc.stdin.end();
+
+  const timer = setTimeout(() => proc.kill(), timeoutMs);
+
+  try {
+    let stdout = "";
+    for await (const chunk of proc.stdout) stdout += chunk.toString();
+    const exitCode = await new Promise<number>(r => proc.on("close", r));
+    if (exitCode !== 0) {
+      let stderr = "";
+      for await (const chunk of proc.stderr) stderr += chunk.toString();
+      throw new Error(`Extraction failed (exit ${exitCode}): ${stderr.slice(0, 200)}`);
+    }
+    const wrapper = JSON.parse(stdout);
+    if (wrapper.structured_output) return wrapper.structured_output as T;
+    if (typeof wrapper.result === "string") return JSON.parse(wrapper.result) as T;
+    return wrapper as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+```
+
+#### Persistent Session (Long-Lived Process)
+
+Instead of spawning a new process per request, keep one Claude process alive
+and send messages via JSONL on stdin. Lower latency, continuous context, no
+session serialization overhead. The tradeoff is lifecycle management.
+
+```typescript
+import { spawn, ChildProcess } from "child_process";
+
+let proc: ChildProcess | null = null;
+let sessionActive = false;
+let lastActivity = Date.now();
+
+function startSession(systemPrompt?: string) {
+  const args = [
+    "-p",
+    "--input-format", "stream-json",
+    "--output-format", "stream-json", "--verbose",
+    "--permission-mode", "dontAsk",
+    "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
+    "--max-budget-usd", "10",
+  ];
+  if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
+
+  proc = spawn("claude", args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: cleanEnv(),
+  });
+  sessionActive = true;
+
+  const parse = createStreamParser((event) => {
+    // Forward events to SSE/WebSocket clients
+    broadcast(event);
+  });
+  proc.stdout!.on("data", parse);
+  proc.stderr!.on("data", (chunk) => console.error(`[claude] ${chunk}`));
+  proc.on("close", () => { sessionActive = false; proc = null; });
+}
+
+function sendMessage(text: string): boolean {
+  if (!proc || !sessionActive) return false;
+  const jsonl = JSON.stringify({
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text }] },
+  }) + "\n";
+  proc.stdin!.write(jsonl);
+  lastActivity = Date.now();
+  return true;
+}
+
+function endSession() {
+  if (proc) proc.kill();
+}
+
+// Inactivity timeout — kill idle sessions after 15 minutes
+setInterval(() => {
+  if (sessionActive && Date.now() - lastActivity > 15 * 60 * 1000) {
+    endSession();
+  }
+}, 60000);
+```
+
+Key differences from the per-request patterns:
+- Uses `--input-format stream-json` for bidirectional communication
+- Stdin stays open — messages are newline-delimited JSON, not piped and closed
+- `--append-system-prompt` injects persona/constraints without replacing base prompt
+- Must manage lifecycle: start, stop, inactivity timeout
+
+#### Action Markers
+
+Let Claude trigger structured side-effects from within its text output. Define
+a marker format in your system prompt, parse it server-side, and forward as
+typed events to the frontend.
+
+```typescript
+// In your system prompt:
+// "When you complete a task, emit: [ACTION] {\"type\":\"task_complete\",\"data\":{...}}"
+
+function parseMarkers(event: any, emit: (marker: any) => void) {
+  if (event.type !== "assistant" || !event.message?.content) return;
+  for (const block of event.message.content) {
+    if (block.type !== "text") continue;
+    for (const line of block.text.split("\n")) {
+      const match = line.match(/\[ACTION\]\s*(\{.*\})/);
+      if (match) {
+        try { emit(JSON.parse(match[1])); } catch { /* malformed marker */ }
+      }
+    }
+  }
+}
+```
+
+This is more flexible than `--json-schema` alone because Claude can emit
+markers at any point during its response — not just at the end. Use it when
+you need Claude to trigger UI updates (progress steps, agent registration,
+sound effects) as part of a longer operation.
 
 ## What to Generate
 

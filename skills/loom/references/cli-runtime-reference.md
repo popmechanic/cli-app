@@ -440,27 +440,6 @@ claude -p --model opus "complex task"          # Best quality
 3. MCP tools load by default — use `--strict-mcp-config` to control
 4. `structured_output` is separate from `result` in JSON output
 5. Context caching reduces cost on repeated runs (don't invalidate KV cache with dynamic timestamps at prompt start)
-6. **`--allowedTools` and `--tools` serve different purposes — don't mix them.**
-   `--allowedTools` is a whitelist: only listed tools are permitted, everything
-   else is auto-denied by `dontAsk`. `--tools` is a filter: it restricts which
-   tools are available at all. Use one mental model per invocation:
-   - **Whitelist path:** `--allowedTools "Bash(git *)" --permission-mode dontAsk`
-   - **Filter path:** `--tools "Read,Glob,Grep" --permission-mode bypassPermissions`
-   - **No tools:** `--tools ""`
-7. **Always check `is_error` before reading `structured_output`.** When Claude
-   hits a budget cap or tool failure, `is_error` is `true` and
-   `structured_output` is `null`. Reading `null` silently produces empty UI.
-8. **Stream chunks split JSON lines.** When parsing `stream-json` output,
-   buffer incomplete lines across `data` events. Splitting on `\n` and parsing
-   each segment loses data when a JSON object spans two chunks.
-9. **Delete `CLAUDECODE` and `CMUX_SURFACE_ID` env vars when spawning child
-   processes.** Do NOT strip all `CLAUDE_*` vars — some are needed for auth.
-   `CLAUDECODE` triggers nested-session detection; `CMUX_SURFACE_ID` triggers
-   cmux wrapper hook injection.
-10. **Always call `proc.stdin.end()` after spawning `claude -p`.** Without
-    closing stdin, the process hangs waiting for piped input even when the
-    prompt is passed as a CLI argument.
-11. **Use `res.on("close")` for SSE, not `req.on("close")`.** For POST-based
-    SSE endpoints, `req.on("close")` fires when the request body is consumed
-    (immediately), not when the client disconnects. Call `res.flushHeaders()`
-    after setting SSE headers to send them immediately.
+6. **Nesting guard**: When spawning `claude -p` from within Claude Code, remove `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` from the child's environment — these block nested Claude processes. Do NOT filter all `CLAUDE*` vars (that kills auth tokens).
+7. **`dontAsk` without `--allowedTools`** = no tools at all. `dontAsk` auto-denies everything not explicitly allowed. Always pair with `--allowedTools` or `--tools`.
+8. **Stdout is chunked** — TCP delivers data in arbitrary chunks. Buffer lines before parsing JSON (split on `\n`, keep the last incomplete fragment). Use `TextDecoder({ stream: true })` not `chunk.toString()` for UTF-8 safety.
