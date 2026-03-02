@@ -243,9 +243,9 @@ app.use(express.json());
 app.post("/api/analyze", (req, res) => {
   const { content, task } = req.body;
 
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-  );
+  const env = { ...process.env };
+  delete env.CLAUDECODE;       // triggers nested-session detection
+  delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
 
   const schema = JSON.stringify({
     type: "object",
@@ -268,7 +268,7 @@ app.post("/api/analyze", (req, res) => {
       "-p", "--model", "sonnet", "--output-format", "json",
       "--permission-mode", "dontAsk", "--max-budget-usd", "1",
       "--json-schema", schema, "--tools", "", "--no-session-persistence"
-    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000, env: cleanEnv });
+    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000, env });
 
     const parsed = JSON.parse(result);
     if (parsed.is_error) {
@@ -290,8 +290,8 @@ app.post("/api/analyze", (req, res) => {
   are injection-vulnerable, and fail silently on quoting errors.
 - Don't read `structured_output` without checking `is_error` first — when
   Claude hits a budget cap or tool failure, `structured_output` is `null`.
-- Don't skip `cleanEnv` — inherited `CLAUDE_*` vars cause silent misconfiguration
-  when spawning from inside a Claude Code session.
+- Don't skip env cleanup — delete `CLAUDECODE` and `CMUX_SURFACE_ID` before
+  spawning. Do NOT strip all `CLAUDE_*` vars; some are required for auth.
 
 #### Pattern: SSE Streaming
 
@@ -308,17 +308,20 @@ app.post("/api/stream", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
 
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-  );
+  const env = { ...process.env };
+  delete env.CLAUDECODE;       // triggers nested-session detection
+  delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
 
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
     "--permission-mode", "dontAsk", "--max-budget-usd", "2", "--max-turns", "15",
     "--model", "sonnet", "--no-session-persistence",
     task
-  ], { env: cleanEnv });
+  ], { env });
+
+  proc.stdin.end();
 
   let lineBuf = "";
   let gotResult = false;
@@ -333,6 +336,12 @@ app.post("/api/stream", (req, res) => {
         const event = JSON.parse(line);
         if (event.event?.delta?.text) {
           res.write(`data: ${JSON.stringify({ type: "token", text: event.event.delta.text })}\n\n`);
+        } else if (event.type === "assistant" && event.message?.content) {
+          for (const block of event.message.content) {
+            if (block.type === "text" && block.text) {
+              res.write(`data: ${JSON.stringify({ type: "token", text: block.text })}\n\n`);
+            }
+          }
         } else if (event.type === "result") {
           gotResult = true;
           if (event.is_error) {
@@ -366,7 +375,7 @@ app.post("/api/stream", (req, res) => {
     res.end();
   });
 
-  req.on("close", () => proc.kill());
+  res.on("close", () => proc.kill());
 });
 ```
 
@@ -398,9 +407,9 @@ wss.on("connection", (ws) => {
   ws.on("message", (raw) => {
     const { action, payload } = JSON.parse(raw.toString());
 
-    const cleanEnv = Object.fromEntries(
-      Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-    );
+    const env = { ...process.env };
+    delete env.CLAUDECODE;       // triggers nested-session detection
+    delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
 
     const proc = spawn("claude", [
       "-p", "--output-format", "stream-json", "--verbose",
@@ -408,8 +417,9 @@ wss.on("connection", (ws) => {
       "--session-id", sessionId, "--continue",
       "--model", "sonnet",
       payload.prompt
-    ], { env: cleanEnv });
+    ], { env });
 
+    proc.stdin.end();
     activeProc = proc;
     let lineBuf = "";
     let gotResult = false;
@@ -424,6 +434,12 @@ wss.on("connection", (ws) => {
           const event = JSON.parse(line);
           if (event.event?.delta?.text) {
             ws.send(JSON.stringify({ type: "token", text: event.event.delta.text }));
+          } else if (event.type === "assistant" && event.message?.content) {
+            for (const block of event.message.content) {
+              if (block.type === "text" && block.text) {
+                ws.send(JSON.stringify({ type: "token", text: block.text }));
+              }
+            }
           } else if (event.type === "result") {
             gotResult = true;
             if (event.is_error) {
@@ -482,9 +498,9 @@ app.post("/api/jobs", (req, res) => {
   jobs.set(jobId, { status: "running" });
   res.json({ jobId });
 
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-  );
+  const env = { ...process.env };
+  delete env.CLAUDECODE;       // triggers nested-session detection
+  delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
 
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
@@ -492,7 +508,7 @@ app.post("/api/jobs", (req, res) => {
     "--permission-mode", "dontAsk",
     "--tools", "Read,Bash,Glob,Grep",
     "--no-session-persistence"
-  ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv });
+  ], { stdio: ["pipe", "pipe", "pipe"], env });
 
   proc.stdin.write(req.body.task);
   proc.stdin.end();
@@ -557,9 +573,9 @@ app.post("/api/batch", async (req, res) => {
   const { items, task } = req.body;
   const TIMEOUT_MS = 30000;
 
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-  );
+  const env = { ...process.env };
+  delete env.CLAUDECODE;       // triggers nested-session detection
+  delete env.CMUX_SURFACE_ID;  // triggers cmux hook injection
 
   const outcomes = await Promise.allSettled(
     items.map((item: string) => new Promise<any>((resolve, reject) => {
@@ -567,7 +583,7 @@ app.post("/api/batch", async (req, res) => {
         "-p", "--model", "haiku", "--output-format", "json",
         "--permission-mode", "dontAsk", "--max-budget-usd", "0.50",
         "--json-schema", schema, "--tools", "", "--no-session-persistence"
-      ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv });
+      ], { stdio: ["pipe", "pipe", "pipe"], env });
 
       const timeout = setTimeout(() => { proc.kill(); reject(new Error("Timeout")); }, TIMEOUT_MS);
       let stdout = "";

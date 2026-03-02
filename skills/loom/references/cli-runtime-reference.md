@@ -453,6 +453,14 @@ claude -p --model opus "complex task"          # Best quality
 8. **Stream chunks split JSON lines.** When parsing `stream-json` output,
    buffer incomplete lines across `data` events. Splitting on `\n` and parsing
    each segment loses data when a JSON object spans two chunks.
-9. **Strip `CLAUDE_*` env vars when spawning child processes.** If your server
-   runs inside a Claude Code session, inherited environment variables cause
-   silent misconfiguration in child `claude -p` processes.
+9. **Delete `CLAUDECODE` and `CMUX_SURFACE_ID` env vars when spawning child
+   processes.** Do NOT strip all `CLAUDE_*` vars — some are needed for auth.
+   `CLAUDECODE` triggers nested-session detection; `CMUX_SURFACE_ID` triggers
+   cmux wrapper hook injection.
+10. **Always call `proc.stdin.end()` after spawning `claude -p`.** Without
+    closing stdin, the process hangs waiting for piped input even when the
+    prompt is passed as a CLI argument.
+11. **Use `res.on("close")` for SSE, not `req.on("close")`.** For POST-based
+    SSE endpoints, `req.on("close")` fires when the request body is consumed
+    (immediately), not when the client disconnects. Call `res.flushHeaders()`
+    after setting SSE headers to send them immediately.
