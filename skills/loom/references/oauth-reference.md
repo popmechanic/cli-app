@@ -11,9 +11,10 @@ manage, no cost on your side. Users bring their own Claude subscription.
 2. [Constants](#constants)
 3. [PKCE Utilities](#pkce-utilities)
 4. [Server Endpoints](#server-endpoints)
-5. [Token Lifecycle](#token-lifecycle)
-6. [Frontend Setup Screen](#frontend-setup-screen)
-7. [Integration Notes](#integration-notes)
+5. [Token Lifecycle (Session-Based)](#token-lifecycle-session-based)
+6. [Integration Notes](#integration-notes)
+7. [Multi-User Sessions](#multi-user-sessions)
+8. [Frontend Setup Screen](#frontend-setup-screen)
 
 ---
 
@@ -52,11 +53,13 @@ The authentication is a four-step process:
 └──────────┘                           │          │     refresh_token } │               │
                                        └─────┬────┘                     └───────────────┘
                                              │
-                                             │  Writes tokens to
+                                             │  Stores tokens in session map
+                                             │  + sets httpOnly cookie
                                              ▼
-                                       ~/.claude/.credentials.json
+                                       In-memory session store
                                              │
-                                             │  Claude CLI auto-discovers
+                                             │  Server injects CLAUDE_CODE_OAUTH_TOKEN
+                                             │  into claude -p env
                                              ▼
                                        claude -p starts successfully
 ```
@@ -156,7 +159,7 @@ Exchanges an authorization code for tokens using the stored PKCE verifier.
 - Validates state exists in pendingPKCE map (returns 400 if expired/missing)
 - Strips `#state` suffix from code (handles callback URL fragments)
 - POSTs to Anthropic's token endpoint with the code, verifier, and other params
-- On success, calls `writeCredentials()` with the returned tokens
+- On success, creates an in-memory session and sets an httpOnly cookie
 - Returns `{ok: true}` to the frontend
 
 ```typescript
@@ -189,8 +192,23 @@ app.post("/api/oauth/exchange", async (req, res) => {
       return res.status(502).json({ error: `Token exchange failed (${resp.status}): ${err}` });
     }
 
-    const tokens = await resp.json();
-    writeCredentials(tokens.access_token, tokens.refresh_token, tokens.expires_in);
+    const tokens: any = await resp.json();
+
+    // Create session instead of writing to disk
+    const sessionId = randomUUID();
+    sessions.set(sessionId, {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      expiresAt: Date.now() + tokens.expires_in * 1000,
+      createdAt: Date.now(),
+    });
+
+    res.cookie(SESSION_COOKIE_NAME, sessionId, {
+      httpOnly: true,
+      sameSite: "lax",
+      maxAge: SESSION_MAX_AGE_MS,
+      path: "/",
+    });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: "Token exchange failed" });
@@ -200,74 +218,37 @@ app.post("/api/oauth/exchange", async (req, res) => {
 
 ---
 
-## Token Lifecycle
+## Token Lifecycle (Session-Based)
 
-### `writeCredentials()`
+### `requireAuth()` Middleware
 
-Persists OAuth tokens in the format the Claude CLI expects. Sets file
-permissions to `0o600` (user read/write only).
+Validates that requests include a valid session cookie. Attach to any
+endpoint that needs authentication.
 
 ```typescript
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
-
-const CLAUDE_CREDS_PATH = join(homedir(), ".claude", ".credentials.json");
-
-function writeCredentials(accessToken: string, refreshToken: string, expiresIn: number) {
-  const dir = join(homedir(), ".claude");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const creds = {
-    claudeAiOauth: {
-      accessToken,
-      refreshToken,
-      expiresAt: Date.now() + expiresIn * 1000,
-      scopes: ["user:inference", "user:mcp_servers", "user:profile", "user:sessions:claude_code"],
-    },
-  };
-  writeFileSync(CLAUDE_CREDS_PATH, JSON.stringify(creds, null, 2) + "\n", { mode: 0o600 });
+function requireAuth(req: any, res: any, next: any) {
+  const sessionId = req.cookies?.[SESSION_COOKIE_NAME];
+  if (!sessionId) return res.status(401).json({ error: "Not authenticated" });
+  const session = sessions.get(sessionId);
+  if (!session) return res.status(401).json({ error: "Session expired" });
+  req.userSession = session;
+  next();
 }
 ```
 
-### `loadCredentials()`
-
-Checks whether valid credentials exist. Call on server startup to determine
-whether to show the setup screen or the main app.
-
-```typescript
-function loadCredentials(): { accessToken: string; expiresAt: number } | null {
-  if (!existsSync(CLAUDE_CREDS_PATH)) return null;
-  try {
-    const data = JSON.parse(readFileSync(CLAUDE_CREDS_PATH, "utf-8"));
-    const token = data?.claudeAiOauth?.accessToken;
-    const expiresAt = data?.claudeAiOauth?.expiresAt ?? 0;
-    if (typeof token === "string" && token.length > 0) return { accessToken: token, expiresAt };
-    return null;
-  } catch { return null; }
-}
-```
-
-### `refreshTokenIfNeeded()`
+### `refreshSessionIfNeeded()`
 
 Proactively refreshes the access token if it expires within 30 minutes.
 Call before spawning Claude subprocesses to prevent mid-session auth failures.
+Operates on the session object in memory — no file I/O.
 
-**Important:** The refresh token rotates on every refresh — always persist
-the new refresh token from the response.
+**Important:** The refresh token rotates on every refresh — the new tokens
+are stored directly in the session object.
 
 ```typescript
-async function refreshTokenIfNeeded(): Promise<boolean> {
-  const creds = loadCredentials();
-  if (!creds?.accessToken) return false;
-
-  let data: any;
-  try { data = JSON.parse(readFileSync(CLAUDE_CREDS_PATH, "utf-8")); } catch { return false; }
-
-  const refreshToken = data?.claudeAiOauth?.refreshToken;
-  if (!refreshToken) return false;
-
+async function refreshSessionIfNeeded(session: UserSession): Promise<boolean> {
   const thirtyMinutes = 30 * 60 * 1000;
-  if (creds.expiresAt > Date.now() + thirtyMinutes) return false;
+  if (session.expiresAt > Date.now() + thirtyMinutes) return false;
 
   try {
     const resp = await fetch(OAUTH_TOKEN_URL, {
@@ -275,17 +256,32 @@ async function refreshTokenIfNeeded(): Promise<boolean> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         grant_type: "refresh_token",
-        refresh_token: refreshToken,
+        refresh_token: session.refreshToken,
         client_id: OAUTH_CLIENT_ID,
         scope: OAUTH_SCOPES,
       }),
     });
     if (!resp.ok) return false;
 
-    const tokens = await resp.json();
-    writeCredentials(tokens.access_token, tokens.refresh_token, tokens.expires_in);
+    const tokens: any = await resp.json();
+    session.accessToken = tokens.access_token;
+    session.refreshToken = tokens.refresh_token;
+    session.expiresAt = Date.now() + tokens.expires_in * 1000;
     return true;
   } catch { return false; }
+}
+```
+
+### `spawnEnvForUser()`
+
+Injects the user's token into the environment for `claude -p`. Each user's
+Claude process uses only their own Anthropic subscription.
+
+```typescript
+function spawnEnvForUser(session: UserSession): NodeJS.ProcessEnv {
+  const env = cleanEnv();
+  env.CLAUDE_CODE_OAUTH_TOKEN = session.accessToken;
+  return env;
 }
 ```
 
@@ -295,16 +291,78 @@ async function refreshTokenIfNeeded(): Promise<boolean> {
 
 These functions fit into the server lifecycle at specific points:
 
-- **`loadCredentials()`** on server startup — determines whether to show the
-  setup screen or the main app
-- **`refreshTokenIfNeeded()`** before every `spawn("claude", ...)` call —
+- **`requireAuth` middleware** on protected endpoints — validates session cookie
+- **`refreshSessionIfNeeded()`** before every `spawn("claude", ...)` call —
   prevents mid-session auth failures
-- **`/api/health` endpoint** — returns `{ needsSetup: !loadCredentials() }`
-  for the frontend to poll after OAuth exchange
+- **`/api/health` endpoint** — checks session cookie to determine setup state
+- **`/api/logout` endpoint** — destroys session and clears cookie
 
 ```typescript
 app.get("/api/health", (req, res) => {
-  res.json({ needsSetup: !loadCredentials() });
+  const sessionId = req.cookies?.[SESSION_COOKIE_NAME];
+  const session = sessionId ? sessions.get(sessionId) : null;
+  res.json({ needsSetup: !session, user: session?.profile ?? null });
+});
+
+app.post("/api/logout", (req, res) => {
+  const sessionId = req.cookies?.[SESSION_COOKIE_NAME];
+  if (sessionId) sessions.delete(sessionId);
+  res.clearCookie(SESSION_COOKIE_NAME);
+  res.json({ ok: true });
+});
+```
+
+---
+
+## Multi-User Sessions
+
+For apps with multiple users, tokens must not be written to a shared file.
+Instead, store each user's tokens in a server-side session and inject them
+into Claude processes via environment variable.
+
+### Session Store
+
+```typescript
+interface UserSession {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  createdAt: number;
+  profile?: { name?: string; email?: string };
+}
+
+const sessions = new Map<string, UserSession>();
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SESSION_COOKIE_NAME = "loom_session";
+
+// Cleanup expired sessions every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of sessions) {
+    if (now - session.createdAt > SESSION_MAX_AGE_MS) sessions.delete(id);
+  }
+}, 5 * 60 * 1000);
+```
+
+### Per-User Process Spawning
+
+Inject the user's token via environment variable:
+
+```typescript
+function spawnEnvForUser(session: UserSession): NodeJS.ProcessEnv {
+  const env = cleanEnv();
+  env.CLAUDE_CODE_OAUTH_TOKEN = session.accessToken;
+  return env;
+}
+
+// Usage in endpoint handler:
+app.post("/api/chat", requireAuth, async (req: any, res) => {
+  await refreshSessionIfNeeded(req.userSession);
+  const proc = spawn("claude", [...args], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: spawnEnvForUser(req.userSession),
+  });
+  // ... handle streaming
 });
 ```
 
