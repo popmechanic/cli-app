@@ -172,6 +172,19 @@ immediately, even when using slower models.
 Default to **Node.js/TypeScript** with **Express** for the server and plain
 **HTML/CSS/JS** or **React** for the frontend, unless the person prefers otherwise.
 
+### Authentication Setup
+
+Before any server pattern below works, the user needs valid Anthropic
+credentials at `~/.claude/.credentials.json`. Your server should:
+
+1. Check for credentials on startup with `loadCredentials()`
+2. Show the OAuth setup screen if credentials are missing
+3. Call `refreshTokenIfNeeded()` before spawning Claude processes
+
+See `references/oauth-reference.md` for the complete implementation —
+PKCE utilities, server endpoints, token lifecycle, and a ready-to-use
+React setup screen component.
+
 ### The Server Layer
 
 The server's job is simple: receive HTTP requests, spawn Claude, return results.
