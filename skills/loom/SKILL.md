@@ -288,7 +288,7 @@ app.post("/api/analyze", (req, res) => {
       "-p", "--model", "sonnet", "--output-format", "json",
       "--permission-mode", "dontAsk", "--max-budget-usd", "1",
       "--json-schema", schema, "--tools", "", "--no-session-persistence"
-    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000 });
+    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000, env: cleanEnv() });
 
     const parsed = JSON.parse(result);
     if (parsed.is_error) {
