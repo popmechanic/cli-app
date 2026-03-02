@@ -459,35 +459,26 @@ app.post("/api/jobs", (req, res) => {
   jobs.set(jobId, { status: "running" });
   res.json({ jobId });
 
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-  );
-
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
     "--model", "sonnet", "--max-turns", "20", "--max-budget-usd", "5",
     "--permission-mode", "dontAsk",
     "--tools", "Read,Bash,Glob,Grep",
     "--no-session-persistence"
-  ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv });
+  ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv() });
 
   proc.stdin.write(req.body.task);
   proc.stdin.end();
 
   let stderrBuf = "";
 
-  proc.stdout.on("data", (chunk) => {
-    for (const line of chunk.toString().split("\n").filter(Boolean)) {
-      try {
-        const event = JSON.parse(line);
-        if (event.type === "result") {
-          jobs.set(jobId, { status: "complete", result: event });
-        }
-      } catch (e) {
-        // Skip malformed JSON lines — expected for partial stream chunks
-      }
+  const parse = createStreamParser((event) => {
+    if (event.type === "result") {
+      jobs.set(jobId, { status: "complete", result: event });
     }
   });
+
+  proc.stdout.on("data", parse);
 
   proc.stderr.on("data", (chunk) => {
     stderrBuf += chunk.toString();
