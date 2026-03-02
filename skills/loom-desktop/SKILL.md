@@ -1329,3 +1329,214 @@ the permission set to the app's purpose:
 Always pair `--permission-mode dontAsk` with an explicit `--tools` list.
 `dontAsk` auto-denies anything not whitelisted — without a tools list, Claude
 can't use any tools at all.
+
+## Distribution
+
+### Build
+
+```bash
+electrobun build --env=stable
+```
+
+This produces a self-extracting archive (~12MB — the Bun runtime is the main
+component; the system webview adds nothing to bundle size). Build artifacts
+land in an `artifacts/` directory, named by channel, platform, and arch.
+
+Build environments:
+- **`dev`** — Fast iteration with terminal output, no code signing
+- **`canary`** — Pre-release builds with optional signing and update manifests
+- **`stable`** — Production-ready with full signing and distribution artifacts
+
+Builds always target the current host platform and architecture. Cross-compilation
+is not supported — build on macOS for macOS, Windows for Windows.
+
+### Claude CLI as External Dependency
+
+Don't bundle Claude CLI with the app. It updates independently, has its own
+licensing, and the user needs it configured with their own credentials. The
+startup check pattern (shown in Pattern 2) handles the missing case gracefully
+by showing a setup screen with install instructions.
+
+### Code Signing
+
+**macOS** — ElectroBun supports notarization via the `codesign` and `notarize`
+options in `electrobun.config.ts`. You'll need an Apple Developer account and
+a signing certificate. See ElectroBun docs for configuration.
+
+**Windows** — Authenticode signing via the build configuration. Unsigned apps
+trigger SmartScreen warnings. See ElectroBun docs for certificate setup.
+
+### Auto-Updates
+
+ElectroBun uses BSDIFF binary patching for incremental updates — subsequent
+patches can be as small as 14KB. Configure the update URL in your config:
+
+```typescript
+// In electrobun.config.ts:
+export default {
+  // ...app and build config...
+  release: {
+    baseUrl: "https://your-cdn.com/releases",
+  },
+} satisfies ElectrobunConfig;
+```
+
+Upload the `artifacts/` directory to any static file host (S3, Cloudflare R2,
+GitHub Releases). No server infrastructure needed.
+
+The Updater API in the Bun process:
+
+```typescript
+import { Updater } from "electrobun/bun";
+
+// Check for updates on launch
+const localInfo = Updater.getLocalInfo();
+const update = await Updater.checkForUpdate();
+
+if (update) {
+  // Download the patch (incremental if available, full fallback)
+  await Updater.downloadUpdate();
+  // Apply: closes app, swaps binary, relaunches
+  Updater.applyUpdate();
+}
+```
+
+## Gotchas
+
+Critical issues from real-world Loom development. Read these before building.
+
+### 1. Environment variable cleaning
+
+**Must remove:** `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` — these nesting
+guards block `claude -p` from spawning when your dev environment runs inside
+Claude Code.
+
+**Must NEVER remove:** `CLAUDE_CODE_OAUTH_TOKEN` and other `CLAUDE_*` auth
+vars. Stripping all `CLAUDE_*` variables kills authentication and causes
+silent failures.
+
+**Also remove in cmux:** `CMUX_SURFACE_ID`, `CMUX_PANEL_ID`, `CMUX_TAB_ID`,
+`CMUX_WORKSPACE_ID`, `CMUX_SOCKET_PATH` — these trigger nesting detection
+in the Claude terminal app.
+
+Always use `cleanEnv()`. Never hand-filter environment variables.
+
+### 2. Stream buffering
+
+TCP chunks split JSON lines arbitrarily. Never do this:
+
+```typescript
+// BROKEN: chunk may contain half a JSON line
+chunk.toString().split("\n").forEach(line => JSON.parse(line));
+```
+
+Always use `createStreamParser` to buffer across chunk boundaries.
+
+### 3. TextDecoder with `{ stream: true }`
+
+Multi-byte UTF-8 characters (emoji, CJK, accented characters) can split
+across chunk boundaries. `chunk.toString()` corrupts them. Always use:
+
+```typescript
+const decoder = new TextDecoder();
+buffer += decoder.decode(chunk, { stream: true });
+```
+
+The `{ stream: true }` option tells the decoder to hold incomplete byte
+sequences for the next chunk.
+
+### 4. `dontAsk` needs `--tools`
+
+`--permission-mode dontAsk` auto-denies everything not explicitly allowed.
+Without a `--tools` list, Claude can't use any tools at all — not even Read.
+Always pair them:
+
+```bash
+claude -p --permission-mode dontAsk --tools "Read,Glob,Grep" "analyze this"
+```
+
+With an empty string (`--tools ""`), Claude runs as pure chat with no tool
+access. This is valid for reasoning-only tasks.
+
+### 5. Extended thinking models
+
+Models with extended thinking (like haiku-4.5) deliver text as complete
+`assistant` content blocks — not incremental `stream_event` deltas. Your
+stream handler must process both:
+
+- `assistant` events with `message.content[].type === "text"` blocks
+- `stream_event` events with `event.delta.text` deltas
+
+The `deriveAndSendRPC` function above handles both patterns.
+
+### 6. RPC request timeout
+
+ElectroBun's default RPC request timeout may be too short for `startTask`
+calls with long prompts or slow model startup. If `startTask` times out
+before Claude spawns, increase the timeout in your RPC configuration or
+return the `taskId` immediately (before Claude finishes) as shown in the
+streaming pattern.
+
+### 7. ElectroBun beta status
+
+ElectroBun is at v1.14.4 stable (March 2026). Known platform issues:
+
+- **Linux**: Self-extracting binary issues on some distributions
+- **Windows**: WebView2 preload script truncation in some configurations
+- **No `saveFileDialog()`** — use `Bun.write()` with a known path as workaround
+- **Menu support**: Full on macOS, basic on Windows, not supported on Linux
+
+Check [github.com/blackboardsh/electrobun/issues](https://github.com/blackboardsh/electrobun/issues)
+for current status.
+
+### 8. System webview differences
+
+The webview is not a bundled browser — it's the system's native webview:
+
+| Platform | Engine | Notes |
+|----------|--------|-------|
+| macOS | WKWebView (WebKit) | Most consistent, best support |
+| Windows | WebView2 (Chromium) | Requires Edge WebView2 Runtime |
+| Linux | WebKit2GTK | Version varies by distro, test carefully |
+
+CSS and JavaScript behavior can differ across engines. Test on all target
+platforms. For consistent rendering, consider enabling CEF (Chromium Embedded
+Framework) via the `bundleCEF` build option — but this increases bundle size
+significantly.
+
+## What to Generate
+
+When you build the app, produce:
+
+- [ ] `electrobun.config.ts` — App configuration (name, identifier, version, build options)
+- [ ] `src/bun/index.ts` — Main process entry: startup CLI check, window creation, menu setup
+- [ ] `src/bun/claude-manager.ts` — `cleanEnv()`, `createStreamParser()`, `spawnClaude()`, `abort()`, heartbeat, `deriveAndSendRPC()`
+- [ ] `src/bun/rpc.ts` — RPC schema type definition (`LoomRPC`) and `BrowserView.defineRPC<LoomRPC>()` with handlers
+- [ ] `src/mainview/index.ts` — Webview entry point with `Electroview<LoomRPC>` setup
+- [ ] `src/mainview/App.tsx` — React UI (or vanilla HTML) with message handlers and task controls
+- [ ] Startup CLI check — verify `claude --version` succeeds, show setup screen if missing
+- [ ] Error handling for process crashes — `proc.exited` check, stderr capture, `error` RPC message
+
+For simple apps, the Bun-side code fits in two files (`index.ts` + `claude-manager.ts`).
+For complex apps, split RPC definitions, session management, and tray logic into
+separate modules.
+
+After generating, run `electrobun dev` and verify the app launches. Then iterate
+based on what the person sees.
+
+## The Possibility Space
+
+The most interesting desktop Loom apps are not chat interfaces in a window.
+They're tools that couldn't exist without an agentic runtime on the local
+machine — applications where Claude has direct access to the filesystem, runs
+as a native process, and streams its reasoning to a purpose-built interface.
+
+A code review tool that you drag a project folder onto. A document processor
+that watches a directory and summarizes new files. A research assistant that
+reads your notes and finds connections. A local AI agent with a system tray
+icon that's always available.
+
+Help people think about what they actually want to make. The question isn't
+"how do I put a chat box in a native window?" but "what would this tool look
+like if there were an intelligence behind it — one that could read any file on
+your machine and stream its thinking to a custom interface?"
