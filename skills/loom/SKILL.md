@@ -194,6 +194,41 @@ Every pattern also handles three failure modes:
   Always wrap JSON.parse in try/catch and check `parsed.is_error` before
   using `structured_output`.
 
+#### Flag Interaction
+
+The safety flags above interact in ways that cause silent failures if
+combined wrong. Three clear paths:
+
+**No tools (pure reasoning):**
+```bash
+claude -p --tools "" --permission-mode dontAsk
+```
+`--tools ""` disables all tools. No `--allowedTools` needed — there's
+nothing to whitelist. `dontAsk` is still good practice (prevents hanging
+if a future flag change re-enables something).
+
+**Specific tools (whitelist):**
+```bash
+claude -p --allowedTools "Bash(git *)" "Read(/src/**)" --permission-mode dontAsk
+```
+`--allowedTools` is a whitelist — only the listed tools run, everything else
+is auto-denied by `dontAsk`. Do NOT also pass `--tools` here. `--tools`
+filters what tools are *available*; `--allowedTools` filters what's
+*permitted*. Mixing them is confusing and leads to silent denials.
+
+**Broad tools in trusted env:**
+```bash
+claude -p --tools "Read,Glob,Grep,Bash" --permission-mode bypassPermissions
+```
+When `--allowedTools` can't express the constraint (e.g., "all Bash commands,
+not just a pattern"), use `--tools` to restrict availability and
+`bypassPermissions` to skip permission prompts entirely. Only use this in
+trusted environments (CI/CD, local dev tools) — never in user-facing servers.
+
+**The key rule:** `--allowedTools` is a whitelist that works with `dontAsk`.
+`--tools` is a filter that restricts availability. Don't mix the two mental
+models in the same invocation.
+
 #### Pattern: REST Endpoint (One-Shot)
 
 Someone triggers an action → server calls Claude → returns JSON.
@@ -207,6 +242,10 @@ app.use(express.json());
 
 app.post("/api/analyze", (req, res) => {
   const { content, task } = req.body;
+
+  const cleanEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
+  );
 
   const schema = JSON.stringify({
     type: "object",
@@ -229,7 +268,7 @@ app.post("/api/analyze", (req, res) => {
       "-p", "--model", "sonnet", "--output-format", "json",
       "--permission-mode", "dontAsk", "--max-budget-usd", "1",
       "--json-schema", schema, "--tools", "", "--no-session-persistence"
-    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000 });
+    ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000, env: cleanEnv });
 
     const parsed = JSON.parse(result);
     if (parsed.is_error) {
@@ -244,6 +283,15 @@ app.post("/api/analyze", (req, res) => {
   }
 });
 ```
+
+**Don't do this:**
+- Don't use `execSync("claude -p ...")` with string interpolation — use
+  `execFileSync` with an args array. Shell strings break on special characters,
+  are injection-vulnerable, and fail silently on quoting errors.
+- Don't read `structured_output` without checking `is_error` first — when
+  Claude hits a budget cap or tool failure, `structured_output` is `null`.
+- Don't skip `cleanEnv` — inherited `CLAUDE_*` vars cause silent misconfiguration
+  when spawning from inside a Claude Code session.
 
 #### Pattern: SSE Streaming
 
@@ -272,14 +320,26 @@ app.post("/api/stream", (req, res) => {
     task
   ], { env: cleanEnv });
 
+  let lineBuf = "";
+  let gotResult = false;
+
   proc.stdout.on("data", (chunk) => {
-    for (const line of chunk.toString().split("\n").filter(Boolean)) {
+    lineBuf += chunk.toString();
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop()!; // keep incomplete last line in buffer
+    for (const line of lines) {
+      if (!line) continue;
       try {
         const event = JSON.parse(line);
         if (event.event?.delta?.text) {
           res.write(`data: ${JSON.stringify({ type: "token", text: event.event.delta.text })}\n\n`);
         } else if (event.type === "result") {
-          res.write(`data: ${JSON.stringify({ type: "done", cost: event.total_cost_usd })}\n\n`);
+          gotResult = true;
+          if (event.is_error) {
+            res.write(`data: ${JSON.stringify({ type: "error", message: event.result })}\n\n`);
+          } else {
+            res.write(`data: ${JSON.stringify({ type: "done", cost: event.total_cost_usd })}\n\n`);
+          }
         }
       } catch (e) {
         // Skip malformed JSON lines — expected for partial stream chunks
@@ -288,12 +348,15 @@ app.post("/api/stream", (req, res) => {
   });
 
   proc.stderr.on("data", (chunk) => {
-    console.error(`[claude stderr] ${chunk.toString().trim()}`);
+    const msg = chunk.toString().trim();
+    if (msg) console.error(`[claude stderr] ${msg}`);
   });
 
   proc.on("close", (code) => {
-    if (code !== 0) {
-      res.write(`data: ${JSON.stringify({ type: "error", message: `Claude exited with code ${code}` })}\n\n`);
+    if (!gotResult) {
+      res.write(`data: ${JSON.stringify({ type: "error", message: code !== 0
+        ? `Claude exited with code ${code}`
+        : "Process finished without producing a result" })}\n\n`);
     }
     res.end();
   });
@@ -306,6 +369,16 @@ app.post("/api/stream", (req, res) => {
   req.on("close", () => proc.kill());
 });
 ```
+
+**Don't do this:**
+- Don't split on `\n` without buffering the last incomplete line — stream
+  chunks can split a JSON line across two `data` events, causing silent
+  data loss and intermittent `JSON.parse` failures.
+- Don't skip the `gotResult` guard on `close` — if Claude exits without
+  emitting a `result` event (timeout, budget exhausted), the frontend
+  gets no signal that something went wrong.
+- Don't ignore `is_error` on the result — budget caps and tool failures
+  set `is_error: true` with `structured_output: null`.
 
 #### Pattern: WebSocket Session
 
@@ -338,15 +411,26 @@ wss.on("connection", (ws) => {
     ], { env: cleanEnv });
 
     activeProc = proc;
+    let lineBuf = "";
+    let gotResult = false;
 
     proc.stdout.on("data", (chunk) => {
-      for (const line of chunk.toString().split("\n").filter(Boolean)) {
+      lineBuf += chunk.toString();
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop()!; // keep incomplete last line in buffer
+      for (const line of lines) {
+        if (!line) continue;
         try {
           const event = JSON.parse(line);
           if (event.event?.delta?.text) {
             ws.send(JSON.stringify({ type: "token", text: event.event.delta.text }));
           } else if (event.type === "result") {
-            ws.send(JSON.stringify({ type: "done", result: event }));
+            gotResult = true;
+            if (event.is_error) {
+              ws.send(JSON.stringify({ type: "error", message: event.result }));
+            } else {
+              ws.send(JSON.stringify({ type: "done", result: event }));
+            }
           }
         } catch (e) {
           // Skip malformed JSON lines — expected for partial stream chunks
@@ -355,13 +439,16 @@ wss.on("connection", (ws) => {
     });
 
     proc.stderr.on("data", (chunk) => {
-      console.error(`[claude stderr] ${chunk.toString().trim()}`);
+      const msg = chunk.toString().trim();
+      if (msg) console.error(`[claude stderr] ${msg}`);
     });
 
     proc.on("close", (code) => {
       activeProc = null;
-      if (code !== 0) {
-        ws.send(JSON.stringify({ type: "error", message: `Claude exited with code ${code}` }));
+      if (!gotResult) {
+        ws.send(JSON.stringify({ type: "error", message: code !== 0
+          ? `Claude exited with code ${code}`
+          : "Process finished without producing a result" }));
       }
     });
 
@@ -376,6 +463,12 @@ wss.on("connection", (ws) => {
   });
 });
 ```
+
+**Don't do this:**
+- Same buffering and `is_error` rules as SSE above — stream chunks split
+  across `data` events, and results can carry `is_error: true`.
+- Don't forget to null `activeProc` in both `close` and `error` handlers —
+  stale references prevent cleanup on WebSocket disconnect.
 
 #### Pattern: Background Job with Progress
 
@@ -404,14 +497,23 @@ app.post("/api/jobs", (req, res) => {
   proc.stdin.write(req.body.task);
   proc.stdin.end();
 
+  let lineBuf = "";
   let stderrBuf = "";
 
   proc.stdout.on("data", (chunk) => {
-    for (const line of chunk.toString().split("\n").filter(Boolean)) {
+    lineBuf += chunk.toString();
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop()!; // keep incomplete last line in buffer
+    for (const line of lines) {
+      if (!line) continue;
       try {
         const event = JSON.parse(line);
         if (event.type === "result") {
-          jobs.set(jobId, { status: "complete", result: event });
+          if (event.is_error) {
+            jobs.set(jobId, { status: "failed", error: event.result });
+          } else {
+            jobs.set(jobId, { status: "complete", result: event });
+          }
         }
       } catch (e) {
         // Skip malformed JSON lines — expected for partial stream chunks
@@ -424,8 +526,8 @@ app.post("/api/jobs", (req, res) => {
   });
 
   proc.on("close", (code) => {
-    if (code !== 0 && jobs.get(jobId)?.status === "running") {
-      jobs.set(jobId, { status: "failed", error: stderrBuf.trim() || `Exit code ${code}` });
+    if (jobs.get(jobId)?.status === "running") {
+      jobs.set(jobId, { status: "failed", error: stderrBuf.trim() || `Exit code ${code || "unknown"}` });
     }
   });
 
@@ -439,6 +541,11 @@ app.get("/api/jobs/:id", (req, res) => {
   res.json(job || { status: "not_found" });
 });
 ```
+
+**Don't do this:**
+- Don't check `code !== 0` in the `close` handler — also check that no result
+  was received. A zero exit code without a `result` event means Claude
+  finished without producing output (e.g., exceeded turn limits).
 
 #### Pattern: Parallel Analysis
 
@@ -495,6 +602,11 @@ app.post("/api/batch", async (req, res) => {
   res.json({ results });
 });
 ```
+
+**Don't do this:**
+- Don't use `execSync` with string concatenation for parallel items —
+  `spawn` with an args array is correct here. String interpolation with
+  user-provided content is an injection vector.
 
 ### The Frontend Layer
 
@@ -590,6 +702,52 @@ client disconnect, OOM). The stdout buffer contains partial JSON that won't
 parse. Always wrap `JSON.parse` in try/catch, and always check `parsed.is_error`
 before reaching for `structured_output` — Claude sets this flag when it
 couldn't complete the task (budget exhausted mid-run, tool failures, etc.).
+
+#### Error Surfacing Checklist
+
+Every streaming pattern (SSE, WebSocket, Background Job) should surface
+errors through three channels. If you're generating a new Loom app, verify
+all three are present:
+
+1. **`proc.stderr`** → forward to the client as a diagnostic event so the
+   frontend can show it (or at minimum, log it server-side):
+   ```typescript
+   proc.stderr.on("data", (chunk) => {
+     const msg = chunk.toString().trim();
+     if (msg) {
+       res.write(`data: ${JSON.stringify({ type: "stderr", message: msg })}\n\n`);
+     }
+   });
+   ```
+
+2. **`proc.on("close")` + `gotResult` guard** → if the process exits
+   without emitting a `result` event, tell the client something went wrong:
+   ```typescript
+   proc.on("close", (code) => {
+     if (!gotResult) {
+       res.write(`data: ${JSON.stringify({ type: "error", message: code !== 0
+         ? `Claude exited with code ${code}`
+         : "Process finished without producing a result" })}\n\n`);
+     }
+     res.end();
+   });
+   ```
+
+3. **`is_error` check on result** → before accessing `structured_output`,
+   check whether Claude flagged the run as failed:
+   ```typescript
+   if (event.type === "result") {
+     gotResult = true;
+     if (event.is_error) {
+       res.write(`data: ${JSON.stringify({ type: "error", message: event.result })}\n\n`);
+     } else {
+       res.write(`data: ${JSON.stringify({ type: "done", data: event.structured_output })}\n\n`);
+     }
+   }
+   ```
+
+If any of these three is missing, the app will fail silently in at least
+one failure mode.
 
 ### Input Validation
 

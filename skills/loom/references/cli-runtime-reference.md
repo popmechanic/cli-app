@@ -440,3 +440,19 @@ claude -p --model opus "complex task"          # Best quality
 3. MCP tools load by default — use `--strict-mcp-config` to control
 4. `structured_output` is separate from `result` in JSON output
 5. Context caching reduces cost on repeated runs (don't invalidate KV cache with dynamic timestamps at prompt start)
+6. **`--allowedTools` and `--tools` serve different purposes — don't mix them.**
+   `--allowedTools` is a whitelist: only listed tools are permitted, everything
+   else is auto-denied by `dontAsk`. `--tools` is a filter: it restricts which
+   tools are available at all. Use one mental model per invocation:
+   - **Whitelist path:** `--allowedTools "Bash(git *)" --permission-mode dontAsk`
+   - **Filter path:** `--tools "Read,Glob,Grep" --permission-mode bypassPermissions`
+   - **No tools:** `--tools ""`
+7. **Always check `is_error` before reading `structured_output`.** When Claude
+   hits a budget cap or tool failure, `is_error` is `true` and
+   `structured_output` is `null`. Reading `null` silently produces empty UI.
+8. **Stream chunks split JSON lines.** When parsing `stream-json` output,
+   buffer incomplete lines across `data` events. Splitting on `\n` and parsing
+   each segment loses data when a JSON object spans two chunks.
+9. **Strip `CLAUDE_*` env vars when spawning child processes.** If your server
+   runs inside a Claude Code session, inherited environment variables cause
+   silent misconfiguration in child `claude -p` processes.
