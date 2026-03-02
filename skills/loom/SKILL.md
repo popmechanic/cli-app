@@ -1045,9 +1045,13 @@ sound effects) as part of a longer operation.
 
 When you build the app, produce:
 
-1. **`server.ts`** — Express server with the appropriate endpoint pattern(s)
-2. **`public/index.html`** — The frontend (inline styles/scripts for simplicity,
-   or a small React app for complex UIs)
+1. **`server.ts`** — Express server with OAuth endpoints (`/api/oauth/start`,
+   `/api/oauth/exchange`, `/api/health`) plus your app's endpoint pattern(s).
+   Include `loadCredentials()` check on startup, `refreshTokenIfNeeded()` before
+   spawning Claude.
+2. **`public/index.html`** — The frontend, starting with the `<SetupScreen>`
+   component (shown when credentials are missing) and your app's main UI
+   (shown after authentication)
 3. **`package.json`** — Dependencies and start script
 4. **A one-liner to run it** — so the person can verify it works immediately
 
