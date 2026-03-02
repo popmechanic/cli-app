@@ -553,6 +553,50 @@ app.post("/api/batch", async (req, res) => {
 });
 ```
 
+#### Stream-JSON Event Types
+
+When using `--output-format stream-json --verbose`, Claude emits these event
+types as newline-delimited JSON. The patterns above use `createStreamParser`
+to handle buffering. Here's what each event type means and what to forward
+to the frontend:
+
+| Event Type | Shape | What It Means | Forward? |
+|------------|-------|---------------|----------|
+| `system` | `{type:"system", subtype:"init", session_id, model}` | Session started, model identified | Optional (show model) |
+| `stream_event` | `{type:"stream_event", event:{delta:{text}}}` | Incremental token | Yes (live text) |
+| `assistant` | `{type:"assistant", message:{content:[...]}}` | Complete message block with text and tool_use | Yes (tool progress) |
+| `tool_result` | `{type:"tool_result", tool_name, content, is_error}` | Tool completed | Optional (show result) |
+| `result` | `{type:"result", total_cost_usd, usage, is_error}` | Session complete | Yes (done + cost) |
+| `compact` | `{type:"compact"}` | Context window compacted | No (internal) |
+
+**Extracting tool use from `assistant` events:**
+
+```typescript
+if (event.type === "assistant" && event.message?.content) {
+  for (const block of event.message.content) {
+    if (block.type === "text") {
+      // Complete text block (not incremental — use stream_event for that)
+    } else if (block.type === "tool_use") {
+      // Claude is calling a tool: block.name, block.input
+      // Forward to frontend for progress indication
+    }
+  }
+}
+```
+
+Track tool use for progress estimation:
+
+```typescript
+let toolsUsed = 0;
+let hasEdited = false;
+// ... inside event handler:
+if (block.type === "tool_use") {
+  toolsUsed++;
+  if (block.name === "Edit" || block.name === "Write") hasEdited = true;
+}
+// Progress: hasEdited means nearly done, toolsUsed >= 3 means well underway
+```
+
 ### The Frontend Layer
 
 The frontend renders Claude's output as purpose-built UI, not chat bubbles.
