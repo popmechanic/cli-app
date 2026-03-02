@@ -307,3 +307,223 @@ app.get("/api/health", (req, res) => {
   res.json({ needsSetup: !loadCredentials() });
 });
 ```
+
+---
+
+## Frontend Setup Screen
+
+### State Machine
+
+```
+States: idle → starting → idle (step 2) → exchanging → polling → complete
+         ↓                   ↓                ↓
+       error              error            error
+```
+
+State variables:
+
+- `step`: 1 (authorize button) or 2 (paste code)
+- `status`: `idle | starting | exchanging | polling | error`
+- `state`: PKCE state string from `/api/oauth/start`
+- `code`: authorization code pasted by user
+- `error`: error message string
+
+### `handleOAuthStart()`
+
+Opens the Anthropic authorization page. The popup is opened **synchronously**
+before any async work to avoid popup blockers.
+
+```javascript
+const handleOAuthStart = async () => {
+  setStatus('starting');
+  setError('');
+  const popup = window.open('about:blank', '_blank');
+  try {
+    const res = await fetch('/api/oauth/start');
+    const data = await res.json();
+    if (!res.ok) { if (popup) popup.close(); setError(data.error); setStatus('error'); return; }
+    setState(data.state);
+    if (popup) popup.location.href = data.authUrl;
+    else window.open(data.authUrl, '_blank');
+    setStep(2);
+    setStatus('idle');
+  } catch (err) {
+    if (popup) popup.close();
+    setError(err.message);
+    setStatus('error');
+  }
+};
+```
+
+### `handleOAuthExchange()`
+
+Sends the authorization code to the server and polls `/api/health` until
+credentials are confirmed.
+
+```javascript
+const handleOAuthExchange = async () => {
+  if (!code.trim() || !state) return;
+  setStatus('exchanging');
+  setError('');
+  try {
+    const res = await fetch('/api/oauth/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code.trim(), state }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (data.error?.includes('expired')) { setStep(1); setCode(''); setError('Session expired. Start over.'); setStatus('idle'); }
+      else { setError(data.error); setStatus('error'); }
+      return;
+    }
+    setStatus('polling');
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const h = await fetch('/api/health');
+        const hd = await h.json();
+        if (!hd.needsSetup) { onComplete(); return; }
+      } catch {}
+    }
+    setError('Claude process did not start. Check server logs.');
+    setStatus('error');
+  } catch (err) { setError(err.message); setStatus('error'); }
+};
+```
+
+### `<SetupScreen>` Component
+
+A complete, self-contained React component with a two-step OAuth flow.
+Neutral styling — clean and minimal, easy to customize for any app.
+
+Props: `onComplete` callback, fired when credentials are confirmed.
+
+```jsx
+function SetupScreen({ onComplete }) {
+  const [step, setStep] = React.useState(1);
+  const [status, setStatus] = React.useState('idle');
+  const [state, setState] = React.useState('');
+  const [code, setCode] = React.useState('');
+  const [error, setError] = React.useState('');
+
+  const handleOAuthStart = async () => {
+    setStatus('starting');
+    setError('');
+    const popup = window.open('about:blank', '_blank');
+    try {
+      const res = await fetch('/api/oauth/start');
+      const data = await res.json();
+      if (!res.ok) { if (popup) popup.close(); setError(data.error); setStatus('error'); return; }
+      setState(data.state);
+      if (popup) popup.location.href = data.authUrl;
+      else window.open(data.authUrl, '_blank');
+      setStep(2);
+      setStatus('idle');
+    } catch (err) {
+      if (popup) popup.close();
+      setError(err.message);
+      setStatus('error');
+    }
+  };
+
+  const handleOAuthExchange = async () => {
+    if (!code.trim() || !state) return;
+    setStatus('exchanging');
+    setError('');
+    try {
+      const res = await fetch('/api/oauth/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code.trim(), state }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.error?.includes('expired')) { setStep(1); setCode(''); setError('Session expired. Start over.'); setStatus('idle'); }
+        else { setError(data.error); setStatus('error'); }
+        return;
+      }
+      setStatus('polling');
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const h = await fetch('/api/health');
+          const hd = await h.json();
+          if (!hd.needsSetup) { onComplete(); return; }
+        } catch {}
+      }
+      setError('Claude process did not start. Check server logs.');
+      setStatus('error');
+    } catch (err) { setError(err.message); setStatus('error'); }
+  };
+
+  const containerStyle = {
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    justifyContent: 'center', minHeight: '100vh', fontFamily: 'system-ui, sans-serif',
+    padding: '2rem', backgroundColor: '#fafafa',
+  };
+  const cardStyle = {
+    backgroundColor: '#fff', borderRadius: '12px', padding: '2.5rem',
+    maxWidth: '420px', width: '100%', boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+  };
+  const headingStyle = { margin: '0 0 0.5rem', fontSize: '1.5rem', fontWeight: 600 };
+  const textStyle = { color: '#666', lineHeight: 1.6, margin: '0 0 1.5rem' };
+  const buttonStyle = {
+    width: '100%', padding: '0.75rem 1.5rem', fontSize: '1rem', fontWeight: 500,
+    border: 'none', borderRadius: '8px', cursor: 'pointer',
+    backgroundColor: '#1a1a1a', color: '#fff',
+  };
+  const inputStyle = {
+    width: '100%', padding: '0.75rem', fontSize: '1rem', border: '1px solid #ddd',
+    borderRadius: '8px', marginBottom: '1rem', boxSizing: 'border-box',
+  };
+  const errorStyle = {
+    backgroundColor: '#fef2f2', color: '#dc2626', padding: '0.75rem',
+    borderRadius: '8px', marginBottom: '1rem', fontSize: '0.875rem',
+  };
+  const secondaryStyle = {
+    ...buttonStyle, backgroundColor: 'transparent', color: '#666',
+    border: '1px solid #ddd', marginTop: '0.5rem',
+  };
+
+  return React.createElement('div', { style: containerStyle },
+    React.createElement('div', { style: cardStyle },
+      error && React.createElement('div', { style: errorStyle }, error),
+
+      step === 1 ? React.createElement(React.Fragment, null,
+        React.createElement('h1', { style: headingStyle }, 'Connect Your Account'),
+        React.createElement('p', { style: textStyle },
+          'Sign in with your Anthropic account to get started. ',
+          'You\'ll be redirected to claude.ai to authorize access.'
+        ),
+        React.createElement('button', {
+          style: { ...buttonStyle, opacity: status === 'starting' ? 0.6 : 1 },
+          onClick: handleOAuthStart,
+          disabled: status === 'starting',
+        }, status === 'starting' ? 'Opening...' : 'Sign in with Anthropic')
+      ) : React.createElement(React.Fragment, null,
+        React.createElement('h1', { style: headingStyle }, 'Paste Your Code'),
+        React.createElement('p', { style: textStyle },
+          'After authorizing, you\'ll see a code on the Anthropic page. ',
+          'Copy it and paste it below.'
+        ),
+        React.createElement('input', {
+          style: inputStyle, type: 'text', placeholder: 'Paste authorization code here',
+          value: code, onChange: (e) => setCode(e.target.value),
+          disabled: status === 'exchanging' || status === 'polling',
+        }),
+        React.createElement('button', {
+          style: { ...buttonStyle, opacity: !code.trim() || status !== 'idle' ? 0.6 : 1 },
+          onClick: handleOAuthExchange,
+          disabled: !code.trim() || status !== 'idle',
+        }, status === 'exchanging' ? 'Connecting...' : status === 'polling' ? 'Verifying...' : 'Connect'),
+        React.createElement('button', {
+          style: secondaryStyle,
+          onClick: () => { setStep(1); setCode(''); setError(''); },
+          disabled: status === 'exchanging' || status === 'polling',
+        }, 'Back')
+      )
+    )
+  );
+}
+```
