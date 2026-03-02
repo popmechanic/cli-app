@@ -154,12 +154,14 @@ app.get("/api/oauth/start", (req, res) => {
 
 ### `POST /api/oauth/exchange`
 
-Exchanges an authorization code for tokens using the stored PKCE verifier.
+Exchanges an authorization code for tokens using the stored PKCE verifier,
+then fetches the user's profile so the frontend can display their identity.
 
 - Validates state exists in pendingPKCE map (returns 400 if expired/missing)
 - Strips `#state` suffix from code (handles callback URL fragments)
 - POSTs to Anthropic's token endpoint with the code, verifier, and other params
-- On success, creates an in-memory session and sets an httpOnly cookie
+- Fetches user profile from `https://api.anthropic.com/v1/me` using the new access token
+- On success, creates an in-memory session (with profile) and sets an httpOnly cookie
 - Returns `{ok: true}` to the frontend
 
 ```typescript
@@ -189,10 +191,25 @@ app.post("/api/oauth/exchange", async (req, res) => {
 
     if (!resp.ok) {
       const err = await resp.text();
+      console.error(`[oauth] Token exchange failed (${resp.status}):`, err);
       return res.status(502).json({ error: `Token exchange failed (${resp.status}): ${err}` });
     }
 
     const tokens: any = await resp.json();
+
+    // Fetch user profile so the frontend can show who's logged in
+    let profile: { name?: string; email?: string } | undefined;
+    try {
+      const profileResp = await fetch("https://api.anthropic.com/v1/me", {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      });
+      if (profileResp.ok) {
+        const p: any = await profileResp.json();
+        profile = { name: p.name, email: p.email };
+      }
+    } catch (e: any) {
+      console.warn(`[oauth] Profile fetch error:`, e?.message);
+    }
 
     // Create session instead of writing to disk
     const sessionId = randomUUID();
@@ -201,6 +218,7 @@ app.post("/api/oauth/exchange", async (req, res) => {
       refreshToken: tokens.refresh_token,
       expiresAt: Date.now() + tokens.expires_in * 1000,
       createdAt: Date.now(),
+      profile,
     });
 
     res.cookie(SESSION_COOKIE_NAME, sessionId, {
@@ -210,7 +228,8 @@ app.post("/api/oauth/exchange", async (req, res) => {
       path: "/",
     });
     res.json({ ok: true });
-  } catch (err) {
+  } catch (err: any) {
+    console.error(`[oauth] Exchange error:`, err?.message || err);
     res.status(500).json({ error: "Token exchange failed" });
   }
 });
@@ -321,6 +340,10 @@ Instead, store each user's tokens in a server-side session and inject them
 into Claude processes via environment variable.
 
 ### Session Store
+
+**Important:** Sessions live in memory and do not survive server restarts.
+Every redeploy wipes all sessions, forcing users to re-authenticate. The
+frontend must handle this gracefully — see "401 Handling" below.
 
 ```typescript
 interface UserSession {
@@ -585,3 +608,46 @@ function SetupScreen({ onComplete }) {
   );
 }
 ```
+
+---
+
+## 401 Handling
+
+In-memory sessions don't survive server restarts. When a user's session
+is gone (server redeployed, process crashed), their browser still has
+the cookie but the server returns 401. The frontend must catch this on
+protected endpoints and redirect to the setup screen instead of trying
+to parse a non-SSE error response as a stream.
+
+```javascript
+const response = await fetch("/api/chat", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ message }),
+});
+
+if (response.status === 401) {
+  // Session expired or server restarted — redirect to setup
+  showSetupScreen();
+  return;
+}
+
+// Continue with normal SSE stream parsing...
+const reader = response.body.getReader();
+```
+
+Without this guard, a 401 JSON response gets fed to the SSE parser,
+which fails silently — the user sees nothing happen.
+
+---
+
+## CSS Specificity Note
+
+If your app has both a chat input and a setup screen input, beware of
+CSS specificity conflicts. A global `input[type="text"] { border: none; }`
+rule (common for borderless chat inputs) has specificity `0-1-1`, which
+beats a class selector like `.setup-input` at `0-1-0`. The setup input
+will silently lose its border.
+
+Fix: use `input.setup-input` (specificity `0-1-1`) for setup screen
+input styles so they match or exceed the global rule.

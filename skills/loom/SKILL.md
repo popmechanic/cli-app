@@ -184,8 +184,18 @@ store — NOT in a shared file. Your server should:
 
 1. Use `requireAuth` middleware on protected endpoints
 2. Show the OAuth setup screen if no valid session cookie exists
-3. Call `refreshSessionIfNeeded()` before spawning Claude processes
-4. Inject the user's token via `CLAUDE_CODE_OAUTH_TOKEN` env var on each spawn
+3. After token exchange, fetch the user's profile from `https://api.anthropic.com/v1/me`
+   and store it in the session — the frontend needs this to show who's logged in
+4. Call `refreshSessionIfNeeded()` before spawning Claude processes
+5. Inject the user's token via `CLAUDE_CODE_OAUTH_TOKEN` env var on each spawn
+
+**Always log OAuth errors server-side.** The exchange endpoint calls
+Anthropic's token endpoint over HTTPS — this is the most failure-prone
+path (DNS issues on fresh VMs, transient network errors, expired codes).
+Both the `!resp.ok` branch and the `catch` block must `console.error`
+the actual error, not silently return a generic message. Without this,
+`journalctl` shows nothing when the exchange fails and you're debugging
+blind.
 
 See `references/oauth-reference.md` for the complete implementation —
 PKCE utilities, server endpoints, session store, and a ready-to-use
@@ -735,6 +745,12 @@ async function streamTask(task) {
     body: JSON.stringify({ task })
   });
 
+  // Handle expired sessions (server restart wipes in-memory sessions)
+  if (response.status === 401) {
+    showSetupScreen(); // redirect to OAuth setup
+    return;
+  }
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -1054,11 +1070,21 @@ When you build the app, produce:
 1. **`server.ts`** — Express server with cookie-parser, session store,
    `requireAuth` middleware, OAuth endpoints (`/api/oauth/start`,
    `/api/oauth/exchange`, `/api/health`, `/api/logout`), and your app's
-   endpoint pattern(s). Each spawn uses `spawnEnvForUser()` to inject
+   endpoint pattern(s). The exchange endpoint must fetch the user's
+   profile from `https://api.anthropic.com/v1/me` and store it in
+   the session. Each spawn uses `spawnEnvForUser()` to inject
    the requesting user's token.
 2. **`public/index.html`** — The frontend, starting with the `<SetupScreen>`
    component (shown when no session exists) and your app's main UI
-   (shown after authentication), with user indicator and logout button
+   (shown after authentication). Must include a user indicator showing
+   the user's email (from `/api/health` → `user.email`) and a logout
+   button that calls `POST /api/logout`. Use a fallback label like
+   "CONNECTED" if the profile has no email. Protected endpoints must
+   check for 401 responses and redirect to the setup screen (in-memory
+   sessions are wiped on server restart). If the app has both a chat
+   input and a setup screen input, use `input.setup-input` selectors
+   (not `.setup-input`) to avoid CSS specificity conflicts with global
+   `input[type="text"]` rules — see `references/oauth-reference.md`.
 3. **`package.json`** — Dependencies (including `cookie-parser`) and start script
 4. **A one-liner to run it** — so the person can verify it works immediately
 
@@ -1067,6 +1093,21 @@ For complex UIs, scaffold a React frontend with a separate server.
 
 After generating, offer to start the server and open it in the browser together.
 Then iterate based on what the person sees.
+
+### Deployment Verification
+
+When deploying to a remote VM (exe.dev, etc.), verify outbound
+connectivity after starting the service. Fresh VMs can have transient
+DNS or network issues that cause the first OAuth exchange to fail:
+
+```bash
+# Verify the app can reach Anthropic's token endpoint
+curl -s -o /dev/null -w "%{http_code}" https://platform.claude.com/v1/oauth/token
+# Should return 405 (Method Not Allowed for GET) — confirms connectivity
+```
+
+If this returns a network error, wait a few seconds and retry. Don't
+declare deployment complete until the VM can reach Anthropic's servers.
 
 ## The Possibility Space
 
