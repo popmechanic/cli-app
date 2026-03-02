@@ -175,6 +175,12 @@ to approve tool use or notice runaway costs. Three flags are non-negotiable:
 input. `dontAsk` auto-denies any tool not in `--allowedTools`, which is exactly
 what you want: predictable, unattended execution.
 
+**Critical:** `dontAsk` without `--allowedTools` means **no tools at all**.
+If your task needs file access, bash, or any other tool, you MUST pair
+`--permission-mode dontAsk` with `--allowedTools "Read,Bash,..."` or
+`--tools "Read,Bash,..."`. Omitting both gives you a Claude that can reason
+but can't act — and the failure is silent (no error, just missing results).
+
 **`--max-budget-usd`** — Every HTTP request that spawns Claude is an open
 checkbook. Set a hard cap: `0.50` for quick analysis with haiku, `1` for
 typical sonnet tasks, `3–5` for complex multi-turn sessions. Adjust to your
