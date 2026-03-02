@@ -144,16 +144,20 @@ Web apps add security concerns that CLIs don't have:
 - **Auth (required)**: Every Loom app needs valid Anthropic credentials before Claude
   can start. The standard pattern is Anthropic OAuth — users authenticate with their
   own Anthropic account via a one-time setup screen (see `references/oauth-reference.md`).
-  This means users bring their own Claude subscription — no API key management
-  for you, no cost on your side. The server checks for credentials on startup
-  and shows the setup screen if they're missing.
+  For multi-user apps, each user gets their own server-side session with tokens stored
+  in memory. The server injects `CLAUDE_CODE_OAUTH_TOKEN` into each spawned Claude
+  process — no shared credential file. This ensures each user's Claude processes
+  use only their own Anthropic subscription.
 - **Sandboxing**: Claude has filesystem access — what directory should it be scoped to?
 - **Cost**: Each request costs money — do you need rate limiting? Budget caps (`--max-budget-usd`)?
 - **Permissions**: Use the tightest `--permission-mode` and `--allowedTools` that work.
   Prefer `dontAsk` (auto-denies unallowed tools) over `bypassPermissions` (skips all checks).
   Only use `bypassPermissions` when `--allowedTools` fully constrains Claude's capabilities
   and you need unattended execution in a trusted environment (CI/CD, local dev tools).
-- **Multi-tenancy**: If multiple users, each needs isolated sessions and working directories
+- **Multi-tenancy**: If multiple users, each needs isolated sessions (see the multi-user
+  pattern in `references/oauth-reference.md`). Each user authenticates independently,
+  gets a session cookie, and their Claude processes receive their own token via env var.
+  Consider separate working directories per user if they have persistent file operations.
 
 ### 6. Model and performance
 
@@ -174,15 +178,17 @@ Default to **Node.js/TypeScript** with **Express** for the server and plain
 
 ### Authentication Setup
 
-Before any server pattern below works, the user needs valid Anthropic
-credentials at `~/.claude/.credentials.json`. Your server should:
+Before any server pattern below works, each user needs valid Anthropic
+credentials. For multi-user apps, tokens are stored in an in-memory session
+store — NOT in a shared file. Your server should:
 
-1. Check for credentials on startup with `loadCredentials()`
-2. Show the OAuth setup screen if credentials are missing
-3. Call `refreshTokenIfNeeded()` before spawning Claude processes
+1. Use `requireAuth` middleware on protected endpoints
+2. Show the OAuth setup screen if no valid session cookie exists
+3. Call `refreshSessionIfNeeded()` before spawning Claude processes
+4. Inject the user's token via `CLAUDE_CODE_OAUTH_TOKEN` env var on each spawn
 
 See `references/oauth-reference.md` for the complete implementation —
-PKCE utilities, server endpoints, token lifecycle, and a ready-to-use
+PKCE utilities, server endpoints, session store, and a ready-to-use
 React setup screen component.
 
 ### The Server Layer
@@ -1045,14 +1051,15 @@ sound effects) as part of a longer operation.
 
 When you build the app, produce:
 
-1. **`server.ts`** — Express server with OAuth endpoints (`/api/oauth/start`,
-   `/api/oauth/exchange`, `/api/health`) plus your app's endpoint pattern(s).
-   Include `loadCredentials()` check on startup, `refreshTokenIfNeeded()` before
-   spawning Claude.
+1. **`server.ts`** — Express server with cookie-parser, session store,
+   `requireAuth` middleware, OAuth endpoints (`/api/oauth/start`,
+   `/api/oauth/exchange`, `/api/health`, `/api/logout`), and your app's
+   endpoint pattern(s). Each spawn uses `spawnEnvForUser()` to inject
+   the requesting user's token.
 2. **`public/index.html`** — The frontend, starting with the `<SetupScreen>`
-   component (shown when credentials are missing) and your app's main UI
-   (shown after authentication)
-3. **`package.json`** — Dependencies and start script
+   component (shown when no session exists) and your app's main UI
+   (shown after authentication), with user indicator and logout button
+3. **`package.json`** — Dependencies (including `cookie-parser`) and start script
 4. **A one-liner to run it** — so the person can verify it works immediately
 
 For simple apps, a single `server.ts` serving a static `index.html` is ideal.
