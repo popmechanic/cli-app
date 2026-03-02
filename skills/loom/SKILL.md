@@ -141,7 +141,12 @@ IS your API contract between Claude and the frontend.
 
 Web apps add security concerns that CLIs don't have:
 
-- **Auth**: Who can access this? Do you need user accounts?
+- **Auth (required)**: Every Loom app needs valid Anthropic credentials before Claude
+  can start. The standard pattern is Anthropic OAuth — users authenticate with their
+  own Anthropic account via a one-time setup screen (see `references/oauth-reference.md`).
+  This means users bring their own Claude subscription — no API key management
+  for you, no cost on your side. The server checks for credentials on startup
+  and shows the setup screen if they're missing.
 - **Sandboxing**: Claude has filesystem access — what directory should it be scoped to?
 - **Cost**: Each request costs money — do you need rate limiting? Budget caps (`--max-budget-usd`)?
 - **Permissions**: Use the tightest `--permission-mode` and `--allowedTools` that work.
