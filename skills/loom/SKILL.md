@@ -390,34 +390,39 @@ wss.on("connection", (ws) => {
   ws.on("message", (raw) => {
     const { action, payload } = JSON.parse(raw.toString());
 
-    const cleanEnv = Object.fromEntries(
-      Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE"))
-    );
+    // Prevent concurrent subprocess spawns — one at a time per connection
+    if (activeProc) {
+      ws.send(JSON.stringify({ type: "error", message: "Processing in progress" }));
+      return;
+    }
 
     const proc = spawn("claude", [
       "-p", "--output-format", "stream-json", "--verbose",
-      "--permission-mode", "dontAsk", "--max-budget-usd", "3", "--max-turns", "20",
+      "--permission-mode", "dontAsk", "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
+      "--max-budget-usd", "3", "--max-turns", "20",
       "--session-id", sessionId, "--continue",
       "--model", "sonnet",
       payload.prompt
-    ], { env: cleanEnv });
+    ], { env: cleanEnv() });
 
     activeProc = proc;
 
-    proc.stdout.on("data", (chunk) => {
-      for (const line of chunk.toString().split("\n").filter(Boolean)) {
-        try {
-          const event = JSON.parse(line);
-          if (event.event?.delta?.text) {
-            ws.send(JSON.stringify({ type: "token", text: event.event.delta.text }));
-          } else if (event.type === "result") {
-            ws.send(JSON.stringify({ type: "done", result: event }));
+    const parse = createStreamParser((event) => {
+      if (event.type === "assistant" && event.message?.content) {
+        for (const block of event.message.content) {
+          if (block.type === "tool_use") {
+            ws.send(JSON.stringify({ type: "tool", name: block.name, input: block.input }));
           }
-        } catch (e) {
-          // Skip malformed JSON lines — expected for partial stream chunks
         }
       }
+      if (event.event?.delta?.text) {
+        ws.send(JSON.stringify({ type: "token", text: event.event.delta.text }));
+      } else if (event.type === "result") {
+        ws.send(JSON.stringify({ type: "done", result: event }));
+      }
     });
+
+    proc.stdout.on("data", parse);
 
     proc.stderr.on("data", (chunk) => {
       console.error(`[claude stderr] ${chunk.toString().trim()}`);
