@@ -778,3 +778,357 @@ const win = new BrowserWindow({
 
 If Claude isn't found, show a setup screen with install instructions. Don't
 silently fail — the user needs to know why the app isn't working.
+
+### Pattern 3: Conversational (Multi-Turn)
+
+Multi-turn sessions where Claude retains context across messages. Uses
+`--session-id` and `--continue` flags. The Bun process maintains a session map.
+
+Use this for: code assistants where you ask follow-up questions, interactive
+debugging sessions, multi-step analysis that builds on previous answers.
+
+**Bun-side: Session management**
+
+```typescript
+// Session registry
+const sessions = new Map<string, {
+  sessionId: string;
+  turns: number;
+  lastActivity: number;
+}>();
+
+// Clean up stale sessions periodically (optional)
+setInterval(() => {
+  const staleMs = 30 * 60 * 1000; // 30 minutes
+  const now = Date.now();
+  for (const [key, session] of sessions) {
+    if (now - session.lastActivity > staleMs) {
+      sessions.delete(key);
+    }
+  }
+}, 60000);
+```
+
+**Bun-side: Conversational request handler**
+
+Replace the `startTask` handler with session awareness:
+
+```typescript
+const rpc = BrowserView.defineRPC<LoomRPC>({
+  handlers: {
+    startTask: async ({ prompt, model, tools, maxBudget, sessionId }) => {
+      const taskId = crypto.randomUUID();
+
+      let actualSessionId: string;
+      if (sessionId && sessions.has(sessionId)) {
+        // Follow-up turn — reuse session
+        actualSessionId = sessionId;
+        const session = sessions.get(sessionId)!;
+        session.turns++;
+        session.lastActivity = Date.now();
+      } else {
+        // First turn — create new session
+        actualSessionId = crypto.randomUUID();
+        sessions.set(actualSessionId, {
+          sessionId: actualSessionId,
+          turns: 1,
+          lastActivity: Date.now(),
+        });
+      }
+
+      // spawnClaude already handles --session-id and --continue
+      // when opts.sessionId is provided
+      spawnClaude(taskId, prompt, {
+        model, tools, maxBudget,
+        sessionId: actualSessionId,
+      }, rpc);
+
+      return { taskId };
+    },
+    abort: async ({ taskId }) => {
+      const task = activeTasks.get(taskId);
+      if (!task) return { success: false };
+      task.proc.kill("SIGTERM");
+      clearInterval(task.heartbeat);
+      activeTasks.delete(taskId);
+      rpc.send.error({ taskId, message: "Task aborted by user" });
+      return { success: true };
+    },
+  },
+});
+```
+
+Note: `spawnClaude` from Pattern 2 already appends `--session-id <id>
+--continue` when `opts.sessionId` is provided. The first turn omits
+`--continue` — set that logic in `spawnClaude` by checking if the session
+has prior turns.
+
+**Webview-side: Chat UI**
+
+A minimal chat component that maintains conversation context:
+
+```tsx
+import { useState, useEffect, useRef } from "react";
+import { Electroview } from "electrobun/view";
+
+const electrobun = new Electroview<LoomRPC>();
+
+type Message = {
+  role: "user" | "assistant";
+  content: string;
+  taskId?: string;
+};
+
+function ChatApp() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [streaming, setStreaming] = useState(false);
+  const messagesEnd = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    electrobun.rpc.on.token(({ taskId, text }) => {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.taskId === taskId && last.role === "assistant") {
+          return [...prev.slice(0, -1), { ...last, content: last.content + text }];
+        }
+        return [...prev, { role: "assistant", content: text, taskId }];
+      });
+    });
+
+    electrobun.rpc.on.done(() => setStreaming(false));
+    electrobun.rpc.on.error(({ message }) => {
+      setStreaming(false);
+      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${message}` }]);
+    });
+  }, []);
+
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  async function send() {
+    if (!input.trim() || streaming) return;
+    const prompt = input.trim();
+    setInput("");
+    setStreaming(true);
+
+    setMessages((prev) => [...prev, { role: "user", content: prompt }]);
+
+    const { taskId } = await electrobun.rpc.request.startTask({
+      prompt,
+      model: "sonnet",
+      tools: ["Read", "Glob", "Grep", "Bash"],
+      maxBudget: 2,
+      sessionId: sessionId ?? undefined,
+    });
+
+    // After first turn, store session ID for follow-ups
+    if (!sessionId) setSessionId(taskId); // Use taskId as proxy, or track via RPC
+  }
+
+  return (
+    <div className="chat">
+      <div className="messages">
+        {messages.map((msg, i) => (
+          <div key={i} className={`message ${msg.role}`}>
+            <pre>{msg.content}</pre>
+          </div>
+        ))}
+        <div ref={messagesEnd} />
+      </div>
+      <div className="input-row">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Ask a follow-up question..."
+          disabled={streaming}
+        />
+        <button onClick={send} disabled={streaming}>Send</button>
+      </div>
+    </div>
+  );
+}
+```
+
+**Don't do this:**
+- Don't spawn concurrent Claude processes on the same session — one at a time.
+  `--continue` resumes the most recent turn; parallel spawns create race
+  conditions.
+- Don't forget `--continue` on follow-up turns. Without it, Claude starts a
+  fresh conversation even with the same `--session-id`.
+
+### Pattern 4: Background (Long-Running)
+
+For tasks that take minutes — analyzing an entire codebase, batch-processing
+documents, comprehensive code review. The user can navigate away or minimize
+to the system tray. Status messages continue flowing.
+
+**Bun-side: Task registry**
+
+```typescript
+type TaskRecord = {
+  proc: ReturnType<typeof Bun.spawn>;
+  heartbeat: ReturnType<typeof setInterval>;
+  status: "running" | "completed" | "error";
+  result?: { cost: number; duration: number };
+  error?: string;
+  startTime: number;
+};
+
+const taskRegistry = new Map<string, TaskRecord>();
+```
+
+Spawning is identical to Pattern 2 — the difference is lifecycle management.
+Background tasks survive webview navigation and can be listed, polled, or
+cancelled from any view.
+
+**Bun-side: Task list handler**
+
+Add a request to list active tasks (extend the RPC schema):
+
+```typescript
+// Add to your RPC schema's bun.requests:
+listTasks: {
+  params: {};
+  response: {
+    tasks: Array<{
+      taskId: string;
+      status: "running" | "completed" | "error";
+      elapsedMs: number;
+    }>;
+  };
+};
+```
+
+```typescript
+// In the handler:
+listTasks: async () => {
+  const tasks = Array.from(taskRegistry.entries()).map(([taskId, record]) => ({
+    taskId,
+    status: record.status,
+    elapsedMs: Date.now() - record.startTime,
+  }));
+  return { tasks };
+},
+```
+
+**System tray integration**
+
+Minimize to the system tray during long tasks. Show progress in the tooltip:
+
+```typescript
+import { Tray } from "electrobun/bun";
+
+const tray = new Tray({
+  title: "Claude",
+  image: "views://assets/tray-icon.png",
+  width: 22,
+  height: 22,
+});
+
+tray.setMenu([
+  { label: "Show Window", action: "show" },
+  { type: "separator" },
+  { label: "No active tasks", action: "status", enabled: false },
+  { type: "separator" },
+  { label: "Quit", role: "quit" },
+]);
+
+// Listen for tray clicks
+tray.on("tray-clicked", () => {
+  win.focus();
+});
+
+tray.on("tray-item-clicked", (e) => {
+  if (e.data.action === "show") win.focus();
+});
+
+// Update tray when tasks change
+function updateTrayStatus() {
+  const running = Array.from(taskRegistry.values())
+    .filter((t) => t.status === "running");
+
+  if (running.length === 0) {
+    tray.setMenu([
+      { label: "Show Window", action: "show" },
+      { type: "separator" },
+      { label: "No active tasks", action: "status", enabled: false },
+      { type: "separator" },
+      { label: "Quit", role: "quit" },
+    ]);
+  } else {
+    const items = running.map((t, i) => ({
+      label: `Task ${i + 1}: ${Math.round((Date.now() - t.startTime) / 1000)}s`,
+      action: `task-${i}`,
+      enabled: false,
+    }));
+    tray.setMenu([
+      { label: "Show Window", action: "show" },
+      { type: "separator" },
+      ...items,
+      { type: "separator" },
+      { label: "Quit", role: "quit" },
+    ]);
+  }
+}
+```
+
+**Completion notification**
+
+Send a native notification when a background task finishes:
+
+```typescript
+import { Utils } from "electrobun/bun";
+
+// In the "result" handler of spawnClaude, after cleanup:
+Utils.showNotification({
+  title: "Task Complete",
+  body: `Finished in ${Math.round(duration / 1000)}s — $${cost.toFixed(4)}`,
+});
+updateTrayStatus();
+```
+
+**Webview-side: Task list component**
+
+```tsx
+function TaskList() {
+  const [tasks, setTasks] = useState<Array<{
+    taskId: string;
+    status: string;
+    elapsedMs: number;
+  }>>([]);
+
+  async function refresh() {
+    const { tasks } = await electrobun.rpc.request.listTasks({});
+    setTasks(tasks);
+  }
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="task-list">
+      <h3>Background Tasks</h3>
+      {tasks.length === 0 && <p>No active tasks</p>}
+      {tasks.map((task) => (
+        <div key={task.taskId} className={`task ${task.status}`}>
+          <span className="task-id">{task.taskId.slice(0, 8)}</span>
+          <span className="task-status">{task.status}</span>
+          <span className="task-time">{Math.round(task.elapsedMs / 1000)}s</span>
+          {task.status === "running" && (
+            <button onClick={() => electrobun.rpc.request.abort({ taskId: task.taskId })}>
+              Cancel
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
