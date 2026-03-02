@@ -1132,3 +1132,200 @@ function TaskList() {
   );
 }
 ```
+
+## Desktop Features
+
+These features distinguish desktop Loom from web Loom. Each one is optional —
+pick what the app needs.
+
+### File Drag-and-Drop
+
+Users drop files onto the window. ElectroBun provides the file paths. The Bun
+process feeds them to Claude as context.
+
+**Webview-side: Drop handler**
+
+```tsx
+function DropZone({ onFilesDropped }: { onFilesDropped: (paths: string[]) => void }) {
+  const [dragging, setDragging] = useState(false);
+
+  return (
+    <div
+      className={`drop-zone ${dragging ? "active" : ""}`}
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        const paths = Array.from(e.dataTransfer.files).map((f) => f.path);
+        if (paths.length > 0) onFilesDropped(paths);
+      }}
+    >
+      Drop files here to analyze
+    </div>
+  );
+}
+```
+
+**Bun-side: Incorporating dropped files into prompts**
+
+When the webview sends file paths via `startTask`, build a prompt that
+references them:
+
+```typescript
+// In the startTask handler:
+const fileContext = paths.length > 0
+  ? `\n\nAnalyze these files:\n${paths.map((p) => `- ${p}`).join("\n")}`
+  : "";
+const fullPrompt = prompt + fileContext;
+```
+
+Or for read-only analysis, use `--allowedTools "Read(${path})"` patterns to
+scope Claude's access to only the dropped files.
+
+### Native File Dialogs
+
+Open files for input, save results to disk.
+
+**Bun-side: Open file dialog**
+
+```typescript
+import { Utils } from "electrobun/bun";
+
+// Add to RPC schema bun.requests:
+// openFile: { params: {}; response: { path: string | null } };
+
+// Handler:
+openFile: async () => {
+  const result = await Utils.openFileDialog({
+    title: "Select a file to analyze",
+    filters: [
+      { name: "All Files", extensions: ["*"] },
+      { name: "Code", extensions: ["ts", "js", "py", "rs", "go"] },
+      { name: "Documents", extensions: ["md", "txt", "pdf"] },
+    ],
+  });
+  return { path: result ?? null };
+},
+```
+
+**Saving results to disk**
+
+ElectroBun doesn't have `saveFileDialog()` yet. Use `Bun.write()` with
+a known path, or ask the user for a filename via RPC:
+
+```typescript
+// Add to RPC schema bun.requests:
+// saveResult: { params: { content: string; filename: string }; response: { saved: boolean } };
+
+// Handler:
+saveResult: async ({ content, filename }) => {
+  const desktopPath = `${process.env.HOME}/Desktop/${filename}`;
+  await Bun.write(desktopPath, content);
+  return { saved: true };
+},
+```
+
+For a better UX, use `Utils.showItemInFolder()` after saving to open Finder
+with the file highlighted:
+
+```typescript
+await Bun.write(desktopPath, content);
+Utils.showItemInFolder(desktopPath);
+```
+
+### System Tray
+
+Already shown in Pattern 4 above. Key points:
+
+- `new Tray({ title, image, width, height })` — create tray icon
+- `tray.setMenu(items)` — update menu items dynamically
+- `tray.on("tray-clicked", handler)` — handle tray icon click
+- `tray.on("tray-item-clicked", handler)` — handle menu item click
+- Use `views://` scheme for icon paths to reference bundled assets
+
+### Native Menus
+
+Define the app menu bar with keyboard shortcuts:
+
+```typescript
+import { ApplicationMenu } from "electrobun/bun";
+
+ApplicationMenu.setApplicationMenu([
+  {
+    label: "File",
+    submenu: [
+      { label: "New Task", action: "new-task", accelerator: "n" },
+      { label: "Open File...", action: "open-file", accelerator: "o" },
+      { type: "separator" },
+      { label: "Quit", role: "quit" },
+    ],
+  },
+  {
+    label: "Edit",
+    submenu: [
+      { label: "Undo", role: "undo" },
+      { label: "Redo", role: "redo" },
+      { type: "separator" },
+      { label: "Cut", role: "cut" },
+      { label: "Copy", role: "copy" },
+      { label: "Paste", role: "paste" },
+      { label: "Select All", role: "selectAll" },
+    ],
+  },
+  {
+    label: "Task",
+    submenu: [
+      { label: "Abort Current", action: "abort", accelerator: "." },
+      { type: "separator" },
+      { label: "Model: Haiku", action: "model-haiku" },
+      { label: "Model: Sonnet", action: "model-sonnet", checked: true },
+      { label: "Model: Opus", action: "model-opus" },
+    ],
+  },
+]);
+
+// Handle menu actions
+ApplicationMenu.on("application-menu-clicked", (e) => {
+  switch (e.data.action) {
+    case "new-task":
+      // Focus the input field via RPC or reload the view
+      break;
+    case "open-file":
+      // Trigger file dialog
+      break;
+    case "abort":
+      // Abort current task
+      break;
+    case "model-haiku":
+    case "model-sonnet":
+    case "model-opus":
+      // Update model preference
+      break;
+  }
+});
+```
+
+The `accelerator` property maps to Cmd+key on macOS and Ctrl+key on Windows.
+Single-character accelerators are supported on all platforms. The `role` property
+provides built-in OS clipboard and window management.
+
+Note: Application menu is fully supported on macOS. Windows supports basic
+accelerators. Linux does not currently support application menus.
+
+### Local File Access Configuration
+
+Claude's tool access determines what it can do on the user's machine. Match
+the permission set to the app's purpose:
+
+| Use Case | `--tools` Value | Notes |
+|---|---|---|
+| Read-only analysis | `"Read,Glob,Grep"` | Safe default for file inspection |
+| Code modification | `"Read,Edit,Write,Glob,Grep,Bash"` | Full dev toolkit |
+| Pure reasoning | `""` (empty string) | No filesystem access at all |
+| Web research | `"WebSearch,WebFetch"` | Internet access, no local files |
+| Scoped read | `--allowedTools "Read(/src/**)"` | Only specific directories |
+
+Always pair `--permission-mode dontAsk` with an explicit `--tools` list.
+`dontAsk` auto-denies anything not whitelisted — without a tools list, Claude
+can't use any tools at all.
