@@ -1,6 +1,20 @@
+# Test apps and artifacts
+neko-chat/
+neko-chat-desktop/
+codelens/
+symmetry-terminal/
 commit-storyteller/
 loom-workspace/
+tests/
+explainer.html
+
+# Build artifacts
 *.skill
-.DS_Store
 node_modules/
+.DS_Store
+
+# Local config
 .claude/settings.local.json
+
+# Plans and docs (local only)
+docs/
