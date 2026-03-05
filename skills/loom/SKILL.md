@@ -153,7 +153,7 @@ Web apps add security concerns that CLIs don't have:
   process — no shared credential file. This ensures each user's Claude processes
   use only their own Anthropic subscription.
 - **Sandboxing**: Claude has filesystem access — what directory should it be scoped to?
-- **Cost**: Each request costs money — do you need rate limiting? Budget caps (`--max-budget-usd`)?
+- **Rate limiting**: Do you need to throttle requests per user or globally?
 - **Permissions**: Use the tightest `--permission-mode` and `--allowedTools` that work.
   Prefer `dontAsk` (auto-denies unallowed tools) over `bypassPermissions` (skips all checks).
   Only use `bypassPermissions` when `--allowedTools` fully constrains Claude's capabilities
@@ -228,12 +228,7 @@ If your task needs file access, bash, or any other tool, you MUST pair
 `--tools "Read,Bash,..."`. Omitting both gives you a Claude that can reason
 but can't act — and the failure is silent (no error, just missing results).
 
-**`--max-budget-usd`** — Every HTTP request that spawns Claude is an open
-checkbook. Set a hard cap: `0.50` for quick analysis with haiku, `1` for
-typical sonnet tasks, `3–5` for complex multi-turn sessions. Adjust to your
-use case, but never omit it.
-
-**`--max-turns`** — Defense in depth alongside the budget cap. Prevents
+**`--max-turns`** — Prevents
 conversational loops where Claude keeps trying approaches that won't work.
 `5` for one-shot tasks, `10–15` for streaming, `20` for multi-turn sessions.
 
@@ -241,8 +236,8 @@ Every pattern also handles three failure modes:
 
 - **stderr** — Claude writes warnings, errors, and diagnostics here. Always
   capture it; it's your best debugging signal when something goes wrong.
-- **Non-zero exit codes** — Model overloaded, budget exhausted, permission
-  denied, timeout hit. `execFileSync` throws; `spawn` emits a `close` event.
+- **Non-zero exit codes** — Model overloaded, permission denied, timeout hit.
+  `execFileSync` throws; `spawn` emits a `close` event.
 - **Malformed output** — A killed or timed-out process may emit partial JSON.
   Always wrap JSON.parse in try/catch and check `parsed.is_error` before
   using `structured_output`.
@@ -350,7 +345,7 @@ app.post("/api/analyze", (req, res) => {
   try {
     const result = execFileSync("claude", [
       "-p", "--model", "sonnet", "--output-format", "json",
-      "--permission-mode", "dontAsk", "--max-budget-usd", "1",
+      "--permission-mode", "dontAsk",
       "--json-schema", schema, "--tools", "", "--no-session-persistence"
     ], { input: `${task}\n\n${content}`, encoding: "utf-8", timeout: 60000, env: cleanEnv() });
 
@@ -358,7 +353,7 @@ app.post("/api/analyze", (req, res) => {
     if (parsed.is_error) {
       return res.status(502).json({ error: parsed.result });
     }
-    res.json({ ...parsed.structured_output, cost: parsed.total_cost_usd });
+    res.json(parsed.structured_output);
   } catch (e: any) {
     // execFileSync throws on non-zero exit and timeout
     const stderr = e.stderr?.toString().trim();
@@ -373,7 +368,7 @@ app.post("/api/analyze", (req, res) => {
   `execFileSync` with an args array. Shell strings break on special characters,
   are injection-vulnerable, and fail silently on quoting errors.
 - Don't read `structured_output` without checking `is_error` first — when
-  Claude hits a budget cap or tool failure, `structured_output` is `null`.
+  Claude hits a tool failure, `structured_output` is `null`.
 - Don't skip env cleanup — always use `cleanEnv()` before spawning.
   Do NOT strip all `CLAUDE_*` vars; some are required for auth.
 
@@ -402,7 +397,7 @@ app.post("/api/stream", (req, res) => {
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
     "--permission-mode", "dontAsk", "--allowedTools", "Read,Glob,Grep,Bash",
-    "--max-budget-usd", "2", "--max-turns", "15",
+    "--max-turns", "15",
     "--model", "sonnet", "--no-session-persistence",
     task
   ], { env: cleanEnv() });
@@ -470,10 +465,10 @@ app.post("/api/stream", (req, res) => {
   chunks can split a JSON line across two `data` events, causing silent
   data loss and intermittent `JSON.parse` failures.
 - Don't skip the `gotResult` guard on `close` — if Claude exits without
-  emitting a `result` event (timeout, budget exhausted), the frontend
+  emitting a `result` event (timeout, turn limit hit), the frontend
   gets no signal that something went wrong.
-- Don't ignore `is_error` on the result — budget caps and tool failures
-  set `is_error: true` with `structured_output: null`.
+- Don't ignore `is_error` on the result — tool failures set
+  `is_error: true` with `structured_output: null`.
 - Don't assume text arrives via `stream_event` only — models with extended
   thinking (haiku-4.5) deliver text as complete blocks in `assistant` events.
   Always handle both `assistant` text blocks and `stream_event` deltas.
@@ -512,7 +507,7 @@ wss.on("connection", (ws) => {
     const proc = spawn("claude", [
       "-p", "--output-format", "stream-json", "--verbose",
       "--permission-mode", "dontAsk", "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
-      "--max-budget-usd", "3", "--max-turns", "20",
+      "--max-turns", "20",
       ...sessionArgs,
       "--model", "sonnet",
       payload.prompt
@@ -590,7 +585,7 @@ app.post("/api/jobs", (req, res) => {
 
   const proc = spawn("claude", [
     "-p", "--output-format", "stream-json", "--verbose",
-    "--model", "sonnet", "--max-turns", "20", "--max-budget-usd", "5",
+    "--model", "sonnet", "--max-turns", "20",
     "--permission-mode", "dontAsk",
     "--tools", "Read,Bash,Glob,Grep",
     "--no-session-persistence"
@@ -650,7 +645,7 @@ app.post("/api/batch", async (req, res) => {
     items.map((item: string) => new Promise<any>((resolve, reject) => {
       const proc = spawn("claude", [
         "-p", "--model", "haiku", "--output-format", "json",
-        "--permission-mode", "dontAsk", "--max-budget-usd", "0.50",
+        "--permission-mode", "dontAsk",
         "--json-schema", schema, "--tools", "", "--no-session-persistence"
       ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv() });
 
@@ -829,8 +824,8 @@ minimum. In production, send it to your logging stack. This is your primary
 debugging signal when a request fails silently.
 
 **Non-zero exit codes** mean Claude didn't complete successfully. Common
-causes: model overloaded (503 from upstream), budget exhausted (`--max-budget-usd`
-hit), permission denied (tool not in `--allowedTools`), or process killed
+causes: model overloaded (503 from upstream), permission denied (tool not
+in `--allowedTools`), or process killed
 by your timeout. For `execFileSync`, this throws — catch it. For `spawn`,
 listen on the `close` event and check the code.
 
@@ -838,7 +833,7 @@ listen on the `close` event and check the code.
 client disconnect, OOM). The stdout buffer contains partial JSON that won't
 parse. Always wrap `JSON.parse` in try/catch, and always check `parsed.is_error`
 before reaching for `structured_output` — Claude sets this flag when it
-couldn't complete the task (budget exhausted mid-run, tool failures, etc.).
+couldn't complete the task (tool failures, turn limit exceeded, etc.).
 
 #### Error Surfacing Checklist
 
@@ -1038,7 +1033,7 @@ async function extract<T>(prompt: string, schema: object, timeoutMs = 30000): Pr
     "-p", "--model", "haiku", "--output-format", "json",
     "--json-schema", JSON.stringify(schema),
     "--tools", "", "--no-session-persistence",
-    "--permission-mode", "dontAsk", "--max-budget-usd", "0.25"
+    "--permission-mode", "dontAsk"
   ], { stdio: ["pipe", "pipe", "pipe"], env: cleanEnv() });
 
   proc.stdin.write(prompt);
@@ -1085,7 +1080,6 @@ function startSession(systemPrompt?: string) {
     "--output-format", "stream-json", "--verbose",
     "--permission-mode", "dontAsk",
     "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
-    "--max-budget-usd", "10",
   ];
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
 

@@ -358,7 +358,6 @@ async def main():
             allowed_tools=["Read", "Edit", "Bash"],
             permission_mode="acceptEdits",
             max_turns=5,
-            max_budget_usd=10.00,
             model="sonnet"
         ),
     ):
@@ -398,12 +397,9 @@ async for msg in query(prompt="Now find callers", options=ClaudeAgentOptions(res
 
 ---
 
-## Cost and Safety Controls
+## Safety Controls
 
 ```bash
-# Budget cap
-claude -p --max-budget-usd 5.00 "expensive task"
-
 # Turn limit
 claude -p --max-turns 10 "multi-step task"
 
@@ -434,7 +430,6 @@ claude -p --model opus "complex task"          # Best quality
 | Fast/cheap | `claude -p --model haiku "query"` |
 | Best quality | `claude -p --model opus "query"` |
 | With fallback | `claude -p --model sonnet --fallback-model haiku "query"` |
-| Budget cap | `claude -p --max-budget-usd 5 "query"` |
 | Turn limit | `claude -p --max-turns 10 "query"` |
 | Continue session | `claude -p --continue "follow up"` |
 | Resume session | `claude -p --resume UUID "continue"` |
