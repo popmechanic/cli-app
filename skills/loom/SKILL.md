@@ -76,11 +76,13 @@ setup in the Building It section below.
 | **SSE (Server-Sent Events)** | Streaming text to browser | `claude -p --output-format stream-json --verbose` → SSE stream |
 | **WebSocket** | Bidirectional, multi-turn sessions | WS connection → `claude -p --input-format stream-json` |
 | **Background job** | Long-running tasks | Queue → `claude -p` process → poll for result or push via WS |
+| **HTTP Hooks** | Tool visibility, permission approval, lifecycle events | Configure in `.claude/settings.local.json`, server receives POSTs at lifecycle points |
 
 For most apps, start with **REST + SSE**: REST for triggering tasks, SSE for
 streaming progress and results. Add WebSockets only if you need true
 bidirectional communication (e.g., the user can interrupt or steer while
-Claude is working).
+Claude is working). Add **HTTP Hooks** when you need structured tool-lifecycle
+events or UI-driven permission approval (see "HTTP Hooks" section below).
 
 ## The Conversation
 
@@ -1155,10 +1157,234 @@ function parseMarkers(event: any, emit: (marker: any) => void) {
 }
 ```
 
-This is more flexible than `--json-schema` alone because Claude can emit
-markers at any point during its response — not just at the end. Use it when
-you need Claude to trigger UI updates (progress steps, agent registration,
-sound effects) as part of a longer operation.
+For **tool lifecycle events** (tool started, tool completed, Claude stopped),
+prefer HTTP Hooks (see below) — they're structured, reliable, and don't
+require parsing text output. Action Markers remain the right choice for
+**mid-stream custom events**: things Claude emits during text generation that
+don't correspond to tool calls (progress steps, status updates, UI triggers).
+Hooks can't do mid-stream events; Action Markers can't do tool lifecycle
+events. They're complementary.
+
+### HTTP Hooks: Sideband Events from Claude to Your Server
+
+Claude Code can POST structured JSON to your Loom server at lifecycle points —
+before/after tool calls, when Claude finishes responding, when sessions
+start/end. This gives your server reliable, typed events without parsing
+stdout. HTTP hooks **supplement** stdout streaming (you still need
+`stream-json` for token-by-token text), but they're more reliable for
+lifecycle events because they come from Claude Code's own event system.
+
+Configure hooks in `.claude/settings.local.json` (gitignored — these contain
+localhost URLs specific to your dev environment):
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [{
+      "hooks": [{
+        "type": "http",
+        "url": "http://localhost:3456/hooks/tool-complete",
+        "timeout": 30
+      }]
+    }],
+    "PreToolUse": [{
+      "matcher": "Bash|Write|Edit",
+      "hooks": [{
+        "type": "http",
+        "url": "http://localhost:3456/hooks/pre-tool",
+        "timeout": 120
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "http",
+        "url": "http://localhost:3456/hooks/stop",
+        "timeout": 30
+      }]
+    }]
+  }
+}
+```
+
+**Important:** Hooks fire for ALL `claude -p` processes in the project, not
+just ones spawned by your app. Use `session_id` from the POST body to route
+events to the correct client connection. Each hook POST includes `session_id`,
+`tool_name`, `tool_input`, and (for PostToolUse) `tool_response`.
+
+#### Receiving Hook Events
+
+Add Express endpoints to handle the POSTs and relay to the browser:
+
+```typescript
+// Map session IDs to active WebSocket/SSE connections
+const sessionClients = new Map<string, Set<WebSocket>>();
+
+app.post("/hooks/tool-complete", express.json(), (req, res) => {
+  const { session_id, tool_name, tool_input, tool_response } = req.body;
+  const clients = sessionClients.get(session_id);
+  if (clients) {
+    const event = JSON.stringify({
+      type: "tool_complete",
+      tool: tool_name,
+      input: tool_input,
+      response: tool_response
+    });
+    for (const ws of clients) ws.send(event);
+  }
+  res.json({}); // 2xx with empty body = allow, no decision
+});
+
+app.post("/hooks/stop", express.json(), (req, res) => {
+  const { session_id, last_assistant_message } = req.body;
+  const clients = sessionClients.get(session_id);
+  if (clients) {
+    for (const ws of clients) {
+      ws.send(JSON.stringify({ type: "claude_stopped" }));
+    }
+  }
+  // Return empty to allow Claude to stop normally.
+  // Return {"decision": "block", "reason": "..."} to force Claude to continue.
+  res.json({});
+});
+```
+
+#### Interactive Permission Approval from the Browser
+
+The most powerful HTTP hook pattern for Loom apps: let users approve or deny
+tool calls from the web UI instead of being locked into `--permission-mode
+dontAsk`. This turns the browser into the permission dialog.
+
+The flow:
+1. Claude decides to use a tool (e.g., `Bash "npm test"`)
+2. Claude Code POSTs to your `PreToolUse` hook endpoint
+3. Your server pushes the tool details to the browser via WebSocket
+4. The user sees an approval UI and clicks approve or deny
+5. Your server responds to the HTTP hook request with the decision
+6. Claude Code proceeds or blocks based on the response
+
+**Server endpoint:**
+
+```typescript
+// Pending permission requests, keyed by a unique request ID
+const pendingPermissions = new Map<string, {
+  resolve: (decision: any) => void;
+  timer: NodeJS.Timeout;
+}>();
+
+app.post("/hooks/pre-tool", express.json(), (req, res) => {
+  const { session_id, tool_name, tool_input } = req.body;
+  const clients = sessionClients.get(session_id);
+
+  if (!clients || clients.size === 0) {
+    // No connected browser — auto-deny for safety
+    return res.json({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "No browser session connected"
+      }
+    });
+  }
+
+  const requestId = crypto.randomUUID();
+
+  // Push to browser
+  const event = JSON.stringify({
+    type: "permission_request",
+    requestId,
+    tool: tool_name,
+    input: tool_input
+  });
+  for (const ws of clients) ws.send(event);
+
+  // Wait for user decision (timeout after 90s)
+  const promise = new Promise<any>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingPermissions.delete(requestId);
+      resolve({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "Permission request timed out"
+        }
+      });
+    }, 90000);
+    pendingPermissions.set(requestId, { resolve, timer });
+  });
+
+  promise.then((decision) => res.json(decision));
+});
+
+// Browser sends approval/denial here
+app.post("/api/permission-response", express.json(), (req, res) => {
+  const { requestId, approved } = req.body;
+  const pending = pendingPermissions.get(requestId);
+  if (!pending) return res.status(404).json({ error: "Request expired" });
+
+  clearTimeout(pending.timer);
+  pendingPermissions.delete(requestId);
+
+  pending.resolve({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: approved ? "allow" : "deny",
+      permissionDecisionReason: approved
+        ? "User approved via browser"
+        : "User denied via browser"
+    }
+  });
+
+  res.json({ ok: true });
+});
+```
+
+**Frontend approval component:**
+
+```javascript
+// Handle permission requests from WebSocket
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  if (msg.type === "permission_request") {
+    showPermissionDialog(msg);
+  }
+};
+
+function showPermissionDialog({ requestId, tool, input }) {
+  const dialog = document.createElement("div");
+  dialog.className = "permission-dialog";
+  dialog.innerHTML = `
+    <div class="permission-content">
+      <h3>Claude wants to use: ${esc(tool)}</h3>
+      <pre>${esc(JSON.stringify(input, null, 2))}</pre>
+      <div class="permission-actions">
+        <button onclick="respondPermission('${requestId}', true)">Allow</button>
+        <button onclick="respondPermission('${requestId}', false)">Deny</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+}
+
+async function respondPermission(requestId, approved) {
+  await fetch("/api/permission-response", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requestId, approved })
+  });
+  document.querySelector(".permission-dialog")?.remove();
+}
+```
+
+**Important considerations:**
+- Set `"timeout": 120` on the PreToolUse hook — the default 30s isn't enough
+  for human approval. Claude Code waits for the hook response before proceeding.
+- Use `--permission-mode default` (not `dontAsk`) when using this pattern, so
+  Claude Code sends `PreToolUse` events for tools that need approval.
+- The `session_id` in the hook POST matches the session you get from
+  `--session-id` or the `system.init` event in stream-json output. Use this
+  to route permission requests to the correct browser tab.
+- If no browser is connected, auto-deny for safety. Don't let tool calls
+  hang forever waiting for a user who isn't there.
 
 ## What to Generate
 
