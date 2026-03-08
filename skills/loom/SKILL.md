@@ -728,38 +728,88 @@ app.post("/api/batch", async (req, res) => {
 
 #### Stream-JSON Event Types
 
-When using `--output-format stream-json --verbose`, Claude emits these event
-types as newline-delimited JSON. The patterns above use `createStreamParser`
-to handle buffering. Here's what each event type means and what to forward
-to the frontend:
+When using `--output-format stream-json --verbose --include-partial-messages`,
+Claude emits newline-delimited JSON events. The full event sequence is:
+
+```
+system (init) → stream_event (message_start) → stream_event (content_block_start)
+→ stream_event (content_block_delta) ×N → stream_event (content_block_stop)
+→ assistant (complete block) → stream_event (message_delta) → stream_event (message_stop)
+→ rate_limit_event → result
+```
+
+Without `--include-partial-messages`, only `system`, `assistant`, and `result`
+events appear — no token-level streaming. **Always use `--include-partial-messages`
+for streaming patterns.**
 
 | Event Type | Shape | What It Means | Forward? |
 |------------|-------|---------------|----------|
-| `system` | `{type:"system", subtype:"init", session_id, model}` | Session started, model identified | Optional (show model) |
-| `stream_event` | `{type:"stream_event", event:{delta:{text}}}` | Incremental token | Yes (live text) |
-| `assistant` | `{type:"assistant", message:{content:[...]}}` | Complete message block with text and tool_use | Yes (text + tool progress) |
-| `tool_result` | `{type:"tool_result", tool_name, content, is_error}` | Tool completed | Optional (show result) |
-| `result` | `{type:"result", total_cost_usd, usage, is_error}` | Session complete | Yes (done + cost) |
-| `compact` | `{type:"compact"}` | Context window compacted | No (internal) |
+| `system` | `{type:"system", subtype:"init", session_id, model, tools, ...}` | Session started | Optional (extract session_id) |
+| `stream_event` | `{type:"stream_event", event:{type:"content_block_delta", delta:{text:"..."}}}` | Incremental token (requires `--include-partial-messages`) | Yes (live text) |
+| `assistant` | `{type:"assistant", message:{content:[{type:"text",text:"..."}, {type:"tool_use",...}], stop_reason:"end_turn"|"tool_use"|null}}` | Complete message with text and/or tool calls | Tool use only (text already streamed via `stream_event`) |
+| `tool_result` | `{type:"tool_result", tool_name, content, is_error}` | Tool execution completed (only appears when tools are used) | Optional (show tool output or detect tool failures via `is_error`) |
+| `compact` | `{type:"compact"}` | Context window compacted (only in long sessions) | No (internal) |
+| `rate_limit_event` | `{type:"rate_limit_event", rate_limit_info:{status, utilization, rateLimitType, isUsingOverage, resetsAt}}` | Rate limit status update | No (but log it — if `utilization` is high, consider adding delays between spawns) |
+| `result` | `{type:"result", subtype:"success"|"error_max_turns", is_error, stop_reason:"end_turn"|"max_turns", session_id, num_turns, duration_ms, total_cost_usd}` | Session complete | Yes (done signal) |
 
-**Important: extended thinking changes the streaming pattern.** Models with
-extended thinking (haiku-4.5) do NOT emit `stream_event` tokens. Instead,
-text arrives as complete blocks in `assistant` events — first a `thinking`
-block, then a `text` block. Always handle both `assistant` text blocks and
-`stream_event` deltas so your app works with any model.
+**Notes on specific fields:**
+- `stop_reason` appears on both `assistant` events (per-message) and `result` events
+  (per-session). On `result`, verified values: `"end_turn"` for normal completion.
+  Use `subtype` for programmatic branching (`"error_max_turns"` vs `"success"`);
+  `stop_reason` is available if you need finer distinctions.
+- `total_cost_usd` is present on `result` even for subscription users. It reflects
+  internal accounting but is not meaningful for billing — do not surface it in the UI.
+- `rate_limit_event` appears between the last `assistant` and `result` events.
+  It's informational — no action needed unless `utilization` is consistently high,
+  in which case add a small delay between concurrent spawns to avoid hitting limits.
+- `tool_result` and `compact` are carried forward from the existing documentation.
+  They were not re-verified (the 2026-03-08 tests used `--tools ""`
+  and short prompts, so neither event would have appeared). Their shapes are
+  presumed accurate — they almost certainly exist when tools are active or
+  context compaction triggers.
 
-**Extracting text and tool use from `assistant` events:**
+**Extended thinking models** (e.g., haiku-4.5) work correctly with this
+approach. With `--include-partial-messages`, extended thinking models emit
+`content_block_delta` events for thinking content, but these have EMPTY
+`delta.text` — the `event.event?.delta?.text` check naturally skips them.
+Real text tokens stream normally via `stream_event` for all models.
+The `assistant` event contains the full thinking block (for logging) followed
+by the text block — but since text was already streamed, only forward
+`tool_use` from `assistant` events. Do NOT fall back to forwarding
+`assistant` text blocks — this is unnecessary with `--include-partial-messages`
+and would cause duplicate text.
+
+**Extracting text and tool use:**
 
 ```typescript
-if (event.type === "assistant" && event.message?.content) {
+// With --include-partial-messages: text arrives via stream_event, not assistant.
+// Only extract tool_use from assistant events.
+if (event.type === "stream_event" && event.event?.delta?.text) {
+  // Token-by-token text — forward to frontend
+} else if (event.type === "assistant" && event.message?.content) {
   for (const block of event.message.content) {
-    if (block.type === "text" && block.text) {
-      // Complete text block — forward as token(s) to the frontend.
-      // With extended-thinking models, this IS the primary text delivery.
-    } else if (block.type === "tool_use") {
+    if (block.type === "tool_use") {
       // Claude is calling a tool: block.name, block.input
       // Forward to frontend for progress indication
     }
+    // DO NOT forward block.type === "text" — it duplicates stream_event tokens
+  }
+}
+```
+
+**Detecting max-turns exhaustion:** When `--max-turns` is exceeded, the `result`
+event has `subtype: "error_max_turns"` and `is_error: false`. Check `subtype`
+to detect this — it's easy to miss because `is_error` is false:
+
+```typescript
+if (event.type === "result") {
+  gotResult = true;
+  if (event.is_error) {
+    send({ type: "error", message: event.result });
+  } else if (event.subtype === "error_max_turns") {
+    send({ type: "warning", message: "Task incomplete — reached turn limit" });
+  } else {
+    send({ type: "done" });
   }
 }
 ```

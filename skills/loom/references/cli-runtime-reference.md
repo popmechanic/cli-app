@@ -83,7 +83,6 @@ Returns: `type`, `subtype`, `is_error`, `duration_ms`, `result`,
 Extract fields with jq:
 ```bash
 claude -p --output-format json "query" | jq -r '.result'
-claude -p --output-format json "query" | jq '.total_cost_usd'
 ```
 
 ### stream-json (real-time, requires --verbose)
@@ -94,11 +93,14 @@ claude -p --output-format stream-json --verbose "Write a poem"
 
 Event sequence:
 ```
-{"type":"system","subtype":"init","session_id":"..."}
-{"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"token"}}}
-{"type":"assistant","message":{...}}
-{"type":"result","subtype":"success","total_cost_usd":0.02}
+{"type":"system","subtype":"init","session_id":"...","model":"claude-sonnet-4-6","tools":[...]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","session_id":"...","num_turns":1}
 ```
+
+Note: With `--include-partial-messages`, additional `stream_event` events appear
+between `system` and `assistant` containing token-level deltas. See the
+Stream-JSON Event Types table in `SKILL.md` for the complete event sequence.
 
 ---
 
@@ -256,12 +258,15 @@ claude -p --output-format stream-json --verbose "Write a story" | \
 
 ### Node.js stream parsing
 ```javascript
+// Note: stream_event tokens require --include-partial-messages flag.
+// Without it, text arrives only in assistant events.
 const readline = require('readline');
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const event = JSON.parse(line);
   if (event.type === 'stream_event' && event.event?.delta?.text) {
     process.stdout.write(event.event.delta.text);
   }
+  // The stream may contain additional event types — safe to ignore.
 }
 ```
 
