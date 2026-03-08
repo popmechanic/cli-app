@@ -75,6 +75,11 @@ Replace the entire `createStreamParser` callback in the SSE pattern (lines ~407-
 
 Replace the `createStreamParser` callback in the WebSocket pattern (~lines 523-538) with the same structure: `stream_event` for text, `assistant` for tool_use only, `result` with `is_error`/`subtype` checks. Remove `{ type: "done", result: event }` and replace with the `is_error`/`subtype` handling.
 
+**Important:** The WebSocket pattern currently forwards `block.input` alongside `block.name` for tool_use events (line 529: `{ type: "tool", name: block.name, input: block.input }`). **Preserve this** — WebSocket apps typically show what Claude is doing (e.g., "Reading file: /src/app.ts"), and `input` provides that context. The SSE pattern above omits `input` to keep SSE payloads small, but WebSocket can handle richer payloads. The WebSocket tool_use line should remain:
+```typescript
+ws.send(JSON.stringify({ type: "tool", name: block.name, input: block.input }));
+```
+
 **Step 4: Apply the same event handler rewrite to the Background Job pattern**
 
 In the Background Job pattern (~lines 600-604), update the result handler to detect `error_max_turns`:
@@ -221,9 +226,11 @@ async function extract<T>(prompt: string, schema: object, timeoutMs = 30000): Pr
 
 Changes from current code: (1) collect stderr concurrently via `.on("data")` instead of post-close `for await`; (2) register `close` listener before `stdin.write` to prevent race condition; (3) add `is_error` check; (4) retain `wrapper as T` fallback but only after trying `JSON.parse(wrapper.result)` first.
 
-**Step 5: Remove cost from result event forwarding**
+**Step 5: Remove cost from SSE result event forwarding**
 
-In the SSE pattern's result handler (already rewritten in Task 1) and the Error Surfacing Checklist example (~line 871-878), remove `cost: event.total_cost_usd` from the done event. Change `{ type: "done", data: event.structured_output }` to `{ type: "done", data: event.structured_output }` (this one is fine — it forwards structured data, not cost). But change `{ type: "done", cost: event.total_cost_usd }` (line ~424) to `{ type: "done" }`. Subscription users don't need cost tracking.
+In the SSE pattern's result handler (~line 424), change `{ type: "done", cost: event.total_cost_usd }` to `{ type: "done" }`. Subscription users don't need cost tracking. (Task 1's rewrite already handles this, but if applying Task 2 independently, this is the line to change.)
+
+The Error Surfacing Checklist example (~line 876) already does not reference cost — it uses `{ type: "done", data: event.structured_output }`, which forwards useful structured data. Leave it as-is.
 
 **Step 6: Add `JSON.parse` error handling in the frontend SSE code**
 
@@ -284,6 +291,8 @@ for streaming patterns.**
 | `system` | `{type:"system", subtype:"init", session_id, model, tools, ...}` | Session started | Optional (extract session_id) |
 | `stream_event` | `{type:"stream_event", event:{type:"content_block_delta", delta:{text:"..."}}}` | Incremental token (requires `--include-partial-messages`) | Yes (live text) |
 | `assistant` | `{type:"assistant", message:{content:[{type:"text",text:"..."}, {type:"tool_use",...}], stop_reason:"end_turn"|"tool_use"|null}}` | Complete message with text and/or tool calls | Tool use only (text already streamed via `stream_event`) |
+| `tool_result` | `{type:"tool_result", tool_name, content, is_error}` | Tool execution completed | Optional (show tool output or detect tool failures via `is_error`) |
+| `compact` | `{type:"compact"}` | Context window compacted (long sessions) | No (internal) |
 | `rate_limit_event` | `{type:"rate_limit_event", rate_limit_info:{status, utilization, rateLimitType, isUsingOverage, resetsAt}}` | Rate limit status update | No (but log it — if `utilization` is high, consider adding delays between spawns) |
 | `result` | `{type:"result", subtype:"success"|"error_max_turns", is_error, stop_reason:"end_turn"|"max_turns", session_id, num_turns, duration_ms, total_cost_usd}` | Session complete | Yes (done signal) |
 
