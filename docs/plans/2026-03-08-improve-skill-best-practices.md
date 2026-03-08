@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use trycycle-executing to implement this plan task-by-task.
 
-**Goal:** Refactor `skills/loom/SKILL.md` (1632 lines) and `skills/loom-desktop/SKILL.md` (2026 lines) to be under 500 lines each by extracting content to reference files, improving metadata, and following skill writing best practices.
+**Goal:** Refactor `skills/loom/SKILL.md` (1632 lines) and `skills/loom-desktop/SKILL.md` (2026 lines) to be under 500 lines each by extracting content to reference files, improving metadata descriptions for triggering, and following skill writing best practices.
 
 **Architecture:** Each SKILL.md becomes a concise orchestration document — mental model, conversation guide, key patterns (summarized with cross-references), what to generate, and gotchas. Detailed code patterns, event type docs, and feature-specific content move to well-organized reference files with tables of contents. No content is deleted — it's relocated to references.
 
@@ -12,37 +12,38 @@
 
 ## Analysis: What stays, what moves
 
-### loom/SKILL.md (1632 → ~450 lines target)
+### loom/SKILL.md (1632 → ~420 lines target)
 
 **Keep in SKILL.md (core guidance):**
-- Metadata (9 lines) — polish description
+- Metadata (9 lines) — rewrite description for trigger optimization
 - Intro + Why This Matters + Architecture (lines 1-81, ~81 lines)
 - The Conversation (lines 82-172, ~90 lines)
-- Building It intro + Auth Setup summary (lines 173-203, ~30 lines — condense, point to oauth-reference)
+- Building It intro + Auth Setup summary (lines 173-203, ~10 lines condensed, point to oauth-reference)
 - Safety Defaults summary (lines 212-240, ~10 lines condensed)
-- Shared Utilities summary (lines 242-328, ~15 lines condensed — code stays in reference)
-- Server Setup summary (lines 329-356, ~5 lines condensed)
+- Shared Utilities summary (lines 242-328, ~5 lines condensed — code stays in reference)
 - Pattern summaries (REST, SSE, WS, Background, Parallel) — ~30 lines total summarizing when to use each, then cross-ref
-- Frontend Layer summary (lines 879-958, ~15 lines condensed)
+- Stream-JSON Event Types — just the event table (~15 lines)
 - Error Handling mental model (lines 960-982, ~20 lines — keep this, it's guidance not code)
 - What to Generate (lines 1556-1606, ~50 lines) — keep, this is the deliverable checklist
 - First-Run Reliability Checklist (lines 1584-1601, ~18 lines) — keep, operational
 - Deployment Verification (lines 1608-1621, ~14 lines) — keep
 - The Possibility Space (lines 1623-1632, ~10 lines) — keep
 
+All frontend code (Streaming Text Display, Structured Result Rendering) and all server code samples move to references. SKILL.md provides prose summaries with cross-references only.
+
 **Extract to references:**
-- `references/server-patterns.md` (~650 lines): All server-side code patterns (REST, SSE, WebSocket, Background Job, Parallel, Stream-JSON Event Types, Advanced Patterns including Structured Extraction, Persistent Session, Action Markers, HTTP Hooks + Interactive Permission)
-- `references/frontend-patterns.md` (~150 lines): Streaming Text Display, Structured Result Rendering, Error Surfacing Checklist, Input Validation, Temp Directory Cleanup, Handling File Uploads and Drops
-- Shared Utilities code (cleanEnv, createStreamParser, spawnEnvForUser, Server Setup) — move to `references/server-patterns.md` at the top
+- `references/server-patterns.md` (~900 lines): Shared Utilities (cleanEnv, createStreamParser, spawnEnvForUser), Server Setup, all server-side code patterns (REST, SSE, WebSocket, Background Job, Parallel), Stream-JSON Event Types notes and code, Error Surfacing Checklist, Input Validation, Temp Directory Cleanup, Handling File Uploads and Drops, Advanced Patterns (Structured Extraction, Persistent Session, Action Markers, HTTP Hooks + Interactive Permission), Frontend Layer (Streaming Text Display, Structured Result Rendering)
 
 **Existing references stay as-is:**
 - `references/cli-runtime-reference.md` (479 lines) — already well-extracted, has TOC
 - `references/oauth-reference.md` (693 lines) — already well-extracted, has TOC
 
-### loom-desktop/SKILL.md (2026 → ~480 lines target)
+Note: the original plan proposed a separate `references/frontend-patterns.md`. This is unnecessary — there are only ~80 lines of frontend code (Streaming Text Display + Structured Result Rendering), and they fit naturally at the end of `server-patterns.md` as a "Frontend Integration" section since they demonstrate how to consume the server patterns. One file is simpler than two.
+
+### loom-desktop/SKILL.md (2026 → ~460 lines target)
 
 **Keep in SKILL.md (core guidance):**
-- Metadata (13 lines) — polish description
+- Metadata (13 lines) — rewrite description for trigger optimization
 - Intro + Why Desktop + Prerequisites (lines 1-55, ~55 lines)
 - Architecture: Thin Bridge (lines 56-115, ~60 lines)
 - Project Setup (lines 116-134, ~18 lines — already references electrobun-setup.md)
@@ -60,7 +61,7 @@
 
 **Extract to references:**
 - `references/desktop-patterns.md` (~700 lines): All Bun-side and webview-side code patterns (Sync, Streaming including full spawnClaude, Conversational, Background), deriveAndSendRPC function, all webview React components
-- `references/desktop-features.md` (~350 lines): File Drag-and-Drop, Native File Dialogs, System Tray, Native Menus, Local File Access Configuration
+- `references/desktop-features.md` (~250 lines): File Drag-and-Drop, Native File Dialogs, System Tray, Native Menus, Local File Access Configuration
 - `references/distribution.md` (~250 lines): Build, Sharing, Claude CLI dep, App Icon, DMG Icon, Code Signing & Notarization, Auto-Updates
 - `references/gotchas.md` (~350 lines): All 16 gotchas with full detail and code samples
 
@@ -74,7 +75,7 @@
 ## Verification Criteria
 
 1. **Line counts**: Both SKILL.md under 500 lines
-2. **Metadata**: Each description under ~120 words with trigger phrases
+2. **Metadata**: Each description under ~120 words with key trigger phrases optimized per best practices
 3. **Reference integrity**: Every `references/*.md` path mentioned in SKILL.md exists; no orphan reference files
 4. **Section heading diff**: No major sections silently dropped — all headings from original appear as either kept sections or cross-references
 5. **Content balance**: Total line count across all files per skill stays roughly the same (content moved, not deleted)
@@ -92,29 +93,30 @@
 
 Extract the following sections from `skills/loom/SKILL.md` into a new reference file with a table of contents:
 
-1. **Shared Utilities** (lines 242-328) — `cleanEnv()`, `createStreamParser()`, `spawnEnvForUser()` — full code
+1. **Shared Utilities** (lines 242-328) — `cleanEnv()`, `createStreamParser()`, `spawnEnvForUser()` — full code with explanatory prose
 2. **Server Setup** (lines 329-356) — Express baseline — full code
 3. **Pattern: REST Endpoint** (lines 358-416) — full code + "Don't do this"
 4. **Pattern: SSE Streaming** (lines 417-526) — full code + "Don't do this"
 5. **Pattern: WebSocket Session** (lines 527-654) — full code + "Don't do this"
 6. **Pattern: Background Job with Progress** (lines 655-721) — full code + "Don't do this"
 7. **Pattern: Parallel Analysis** (lines 722-775) — full code
-8. **Stream-JSON Event Types** (lines 777-878) — event table, notes, code samples
+8. **Stream-JSON Event Types** (lines 777-878) — event table, notes, extended thinking discussion, code samples for extracting text/tool use and detecting max-turns, tool tracking
 9. **Error Surfacing Checklist** (lines 983-1030) — checklist with code
 10. **Input Validation** (lines 1031-1055) — safePath helper + prompt defense
 11. **Temp Directory Cleanup** (lines 1056-1078) — withTempDir helper
 12. **Handling File Uploads and Drops** (lines 1079-1163) — tiers table, server/frontend code
 13. **Structured Extraction (Async Haiku)** (lines 1170-1218) — extract() helper
-14. **Persistent Session (Long-Lived Process)** (lines 1220-1302) — full code
-15. **Action Markers** (lines 1303-1334) — system prompt pattern
-16. **HTTP Hooks** (lines 1335-1555) — config, receiving events, interactive permission approval
+14. **Persistent Session (Long-Lived Process)** (lines 1220-1302) — full code + key differences list
+15. **Action Markers** (lines 1303-1334) — system prompt pattern + when to use vs hooks
+16. **HTTP Hooks** (lines 1335-1555) — config, receiving events, interactive permission approval (full server + frontend code)
+17. **Frontend Integration** — Streaming Text Display (lines 883-937, the `fetch` + `ReadableStream` POST pattern and the simpler `EventSource` GET pattern), Structured Result Rendering (lines 939-958, the `esc()` helper and `renderResults()`)
 
-Include a table of contents at the top. Introduce the file with one sentence: "Complete server-side code patterns for Loom web apps. Read this when implementing a specific communication pattern or advanced feature."
+Include a table of contents at the top. Introduce the file with one sentence: "Complete server-side and frontend code patterns for Loom web apps. Read this when implementing a specific communication pattern, advanced feature, or frontend integration."
 
 **Step 2: Verify the file**
 
 Run: `wc -l skills/loom/references/server-patterns.md`
-Expected: ~900-1000 lines
+Expected: ~950-1050 lines
 
 **Step 3: Commit**
 
@@ -132,33 +134,106 @@ git commit -m "Extract server patterns to reference file for loom skill"
 
 **Step 1: Replace SKILL.md with condensed version**
 
-Rewrite the file keeping:
+Rewrite the file with these sections:
 
-1. **Metadata** — Keep the current description. It's already under 120 words and has good trigger phrases.
-2. **Intro + Why This Matters + Architecture** (lines 1-81) — Keep verbatim. This is mental model content, not implementation detail.
-3. **The Conversation** (lines 82-172) — Keep verbatim. Design guidance is the core skill.
-4. **Building It** intro + **Authentication Setup** — Condense to ~10 lines. Point to `references/oauth-reference.md` for the complete implementation.
-5. **The Server Layer** — Replace with a "Patterns at a Glance" section: a table listing each pattern with when to use it and a cross-reference to `references/server-patterns.md#pattern-name`. Include the Safety Defaults paragraph (3 flags are non-negotiable) since that's critical guidance, not code.
-6. **Shared Utilities** — 3-line summary listing the three helpers with a cross-ref to server-patterns.
-7. **Stream-JSON Event Types** — Keep just the event table (lines 793-802) and the "extracting text and tool use" code snippet (lines 833-847). Cross-ref server-patterns for the full notes.
-8. **Frontend Layer** — Keep the streaming text display code (~40 lines of JS) since it's the minimum a reader needs to wire up the frontend. Cross-ref server-patterns for structured rendering, error surfacing, file uploads.
-9. **Error Handling** — Keep the mental model paragraph (3 failure modes) but remove the checklist code samples — cross-ref server-patterns.
-10. **What to Generate** — Keep verbatim.
-11. **First-Run Reliability Checklist** — Keep verbatim.
-12. **Deployment Verification** — Keep verbatim.
-13. **The Possibility Space** — Keep verbatim.
+1. **Metadata** — Rewrite the YAML front matter description. The current description (61 words) is functional but can be improved for triggering. Revised description:
 
-The key cross-reference pattern for each extraction:
+   ```yaml
+   description: >
+     Build web applications powered by Claude Code CLI (`claude -p`) or the Agent
+     SDK as the runtime. A Node server spawns Claude processes that read files, run
+     commands, and stream structured output to a custom browser interface via
+     REST/SSE/WebSocket. Handles OAuth authentication, multi-user sessions,
+     streaming, and error recovery. Triggers: "build an app with Claude as backend",
+     "Claude-powered web app", "wrap claude -p in a server", "Claude as runtime",
+     "streaming Claude output to browser". NOT for direct Anthropic API usage,
+     simple chat replicas, or desktop apps (use loom-desktop).
+   ```
 
-```markdown
-> Read `references/server-patterns.md#section-name` for the complete implementation
-> with code samples and "don't do this" warnings.
-```
+   Changes from original: Added "web applications" (distinguishes from desktop), added "streaming" and "error recovery" as capability signals, added more natural trigger phrases ("Claude-powered web app", "streaming Claude output to browser"), added explicit "NOT for desktop apps (use loom-desktop)" cross-reference. Still under 120 words.
+
+2. **Intro + Why This Matters + Architecture** (lines 11-81) — Keep verbatim. This is mental model content, not implementation detail. (~71 lines)
+
+3. **The Conversation** (lines 82-172) — Keep verbatim. Design guidance is the core skill. (~90 lines)
+
+4. **Building It** — Section header + 2-line intro (lines 173-176). (~4 lines)
+
+5. **Authentication Setup** — Condense to ~8 lines of prose summary explaining the pattern (OAuth, session store, per-user tokens). End with cross-reference:
+
+   > Read `references/oauth-reference.md` for the complete implementation — PKCE
+   > utilities, server endpoints, session store, `requireAuth` middleware, token
+   > refresh, and the ready-to-use React `<SetupScreen>` component.
+
+6. **The Server Layer** — Replace with a "Server Patterns" section containing:
+   - Safety Defaults prose (~12 lines): the 3 non-negotiable flags paragraph plus the 3 failure modes paragraph. This is critical guidance, not code.
+   - Shared Utilities 3-line summary naming `cleanEnv()`, `createStreamParser()`, `spawnEnvForUser()` with cross-ref.
+   - "Patterns at a Glance" table listing each pattern with when to use:
+
+     | Pattern | When to Use | Reference |
+     |---------|-------------|-----------|
+     | REST + JSON | One-shot requests, data extraction | `references/server-patterns.md#pattern-rest-endpoint` |
+     | SSE Streaming | Streaming text to browser | `references/server-patterns.md#pattern-sse-streaming` |
+     | WebSocket | Bidirectional, multi-turn | `references/server-patterns.md#pattern-websocket-session` |
+     | Background Job | Long-running tasks | `references/server-patterns.md#pattern-background-job-with-progress` |
+     | Parallel | Batch analysis | `references/server-patterns.md#pattern-parallel-analysis` |
+
+   (~30 lines total for this section)
+
+7. **Stream-JSON Event Types** — Keep just the compact event table (the 7 rows from lines 793-802), without the extended notes, code samples, or thinking model discussion. Add one cross-ref line:
+
+   > See `references/server-patterns.md#stream-json-event-types` for complete notes,
+   > extended thinking behavior, code samples for extracting text/tool use, and
+   > max-turns detection.
+
+   (~15 lines)
+
+8. **Frontend Integration** — Replace the inline code with a 5-line prose summary: "Use `fetch()` + `ReadableStream` for POST-based SSE (CSRF-safe). Parse `data:` lines, dispatch on event type (`token`, `done`, `error`). For quick prototyping, `EventSource` works for GET-based SSE." Then cross-ref:
+
+   > See `references/server-patterns.md#frontend-integration` for the complete
+   > streaming text display and structured result rendering code.
+
+   (~8 lines)
+
+9. **Error Handling** — Keep the mental model paragraph (3 failure modes: stderr, non-zero exit, malformed output, ~22 lines of prose). Remove the Error Surfacing Checklist code. Cross-ref:
+
+   > See `references/server-patterns.md#error-surfacing-checklist` for the
+   > three-channel checklist with code samples.
+
+   (~24 lines)
+
+10. **What to Generate** — Keep verbatim (lines 1556-1606). (~50 lines)
+
+11. **First-Run Reliability Checklist** — Keep verbatim (lines 1584-1601). (~18 lines)
+
+12. **Deployment Verification** — Keep verbatim (lines 1608-1621). (~14 lines)
+
+13. **The Possibility Space** — Keep verbatim (lines 1623-1632). (~10 lines)
+
+**Approximate line count breakdown:**
+
+| Section | Lines |
+|---------|-------|
+| Metadata | 12 |
+| Intro + Why + Architecture | 71 |
+| The Conversation | 90 |
+| Building It + Auth summary | 14 |
+| Server Patterns (safety + utils + table) | 30 |
+| Stream-JSON Event Types (table + ref) | 15 |
+| Frontend Integration (summary + ref) | 8 |
+| Error Handling (prose + ref) | 24 |
+| What to Generate | 50 |
+| First-Run Checklist | 18 |
+| Deployment Verification | 14 |
+| The Possibility Space | 10 |
+| Blank lines, headings, markdown | ~50 |
+| **Total** | **~406** |
+
+This leaves ~94 lines of headroom below the 500-line limit.
 
 **Step 2: Verify line count**
 
 Run: `wc -l skills/loom/SKILL.md`
-Expected: 400-500 lines
+Expected: 380-450 lines
 
 **Step 3: Verify no broken references**
 
@@ -166,17 +241,36 @@ Run a script to check that every `references/*.md` path mentioned in SKILL.md ex
 ```bash
 grep -oP 'references/[a-z-]+\.md' skills/loom/SKILL.md | sort -u | while read f; do [ -f "skills/loom/$f" ] && echo "OK: $f" || echo "MISSING: $f"; done
 ```
-Expected: All OK, no MISSING
+Expected: All OK, no MISSING (should find: cli-runtime-reference.md, oauth-reference.md, server-patterns.md)
 
-**Step 4: Verify section coverage**
+**Step 4: Verify no orphan reference files**
 
-Compare the original section headings against the new file — every heading should either be present or have a cross-reference.
+```bash
+ls skills/loom/references/*.md | while read f; do basename "$f" | xargs -I{} sh -c 'grep -q "{}" skills/loom/SKILL.md && echo "REFERENCED: {}" || echo "ORPHAN: {}"'; done
+```
+Expected: All REFERENCED
 
-**Step 5: Commit**
+**Step 5: Verify section coverage**
+
+Compare the original section headings against the new file — every heading should either be present in SKILL.md or have a cross-reference to the reference file where it now lives. Specifically verify these moved sections have cross-references:
+- Shared Utilities → server-patterns
+- Server Setup → server-patterns
+- REST/SSE/WS/Background/Parallel patterns → server-patterns (via table)
+- Stream-JSON Event Types details → server-patterns
+- Error Surfacing Checklist → server-patterns
+- Input Validation → server-patterns
+- Temp Directory Cleanup → server-patterns
+- Handling File Uploads → server-patterns
+- Advanced Patterns (all three) → server-patterns
+- HTTP Hooks → server-patterns
+- Streaming Text Display → server-patterns
+- Structured Result Rendering → server-patterns
+
+**Step 6: Commit**
 
 ```bash
 git add skills/loom/SKILL.md
-git commit -m "Condense loom SKILL.md to ~450 lines, cross-ref server-patterns"
+git commit -m "Condense loom SKILL.md to ~420 lines, cross-ref server-patterns"
 ```
 
 ---
@@ -190,10 +284,10 @@ git commit -m "Condense loom SKILL.md to ~450 lines, cross-ref server-patterns"
 
 Extract from `skills/loom-desktop/SKILL.md`:
 
-1. **Shared Utilities** (lines 217-328) — `resolveClaudePath()`, `cleanEnv()`, `createStreamParser()` — full code
-2. **`deriveAndSendRPC()`** (lines 345-423) — full function
+1. **Shared Utilities** (lines 217-328) — `resolveClaudePath()`, `cleanEnv()`, `createStreamParser()` — full code with explanatory prose
+2. **`deriveAndSendRPC()`** (lines 345-423) — full function with state tracking
 3. **Pattern 1: Synchronous** (lines 427-507) — Bun-side handler + "Don't do this"
-4. **Pattern 2: Streaming** (lines 508-885) — full spawnClaude(), RPC handlers, webview-side React component, startup CLI check
+4. **Pattern 2: Streaming** (lines 508-885) — full spawnClaude(), RPC handlers, webview-side React component (with module-level callbacks pattern), startup CLI check
 5. **Pattern 3: Conversational** (lines 886-1091) — session management, conversational handler, Chat UI component, "Don't do this"
 6. **Pattern 4: Background** (lines 1092-1263) — task registry, task list handler, system tray integration, completion notification, webview task list component
 
@@ -222,11 +316,11 @@ git commit -m "Extract desktop patterns to reference file for loom-desktop skill
 
 Extract from `skills/loom-desktop/SKILL.md`:
 
-1. **File Drag-and-Drop** (lines 1270-1337) — webview drop handler, Bun-side prompt building
-2. **Native File Dialogs** (lines 1338-1388) — open file, save results
+1. **File Drag-and-Drop** (lines 1270-1337) — webview drop handler (FileReader approach), Bun-side prompt building, explanation of why File.path doesn't work
+2. **Native File Dialogs** (lines 1338-1388) — open file via Utils.openFileDialog(), save results via Bun.write()
 3. **System Tray** (lines 1389-1398) — key points (brief, most code is in Pattern 4)
-4. **Native Menus** (lines 1399-1467) — ApplicationMenu setup + event handling
-5. **Local File Access Configuration** (lines 1468-1490) — tools/permissions table
+4. **Native Menus** (lines 1399-1467) — ApplicationMenu setup + event handling + accelerator notes
+5. **Local File Access Configuration** (lines 1468-1490) — tools/permissions table + bypassPermissions rationale
 
 Include a table of contents. Intro: "Desktop-specific features for Loom apps: file handling, native UX, and access configuration. Read this when adding native platform features to your app."
 
@@ -253,13 +347,13 @@ git commit -m "Extract desktop features to reference file for loom-desktop skill
 
 Extract from `skills/loom-desktop/SKILL.md`:
 
-1. **Build** (lines 1493-1512)
-2. **Sharing the Build** (lines 1513-1527)
-3. **Claude CLI as External Dependency** (lines 1528-1534)
-4. **App Icon** (lines 1535-1564)
-5. **DMG Icon** (lines 1565-1577)
-6. **Code Signing & Notarization** (lines 1578-1626)
-7. **Auto-Updates** (lines 1627-1661)
+1. **Build** (lines 1493-1512) — build command, environments table, platform targeting
+2. **Sharing the Build** (lines 1513-1527) — DMG not ZIP, xattr workaround
+3. **Claude CLI as External Dependency** (lines 1528-1534) — don't bundle, startup check
+4. **App Icon** (lines 1535-1564) — sips commands, config
+5. **DMG Icon** (lines 1565-1577) — iconutil + DeRez/Rez workflow
+6. **Code Signing & Notarization** (lines 1578-1626) — full 7-step setup
+7. **Auto-Updates** (lines 1627-1661) — BSDIFF patching, Updater API
 
 Intro: "Building, signing, and distributing Loom desktop apps. Read this when preparing your app for distribution or when setting up code signing."
 
@@ -286,7 +380,7 @@ git commit -m "Extract distribution guide to reference file for loom-desktop ski
 
 Extract all 16 gotchas from `skills/loom-desktop/SKILL.md` (lines 1662-1979) with their full detail and code samples. Keep the numbering and full explanations.
 
-Include a table of contents listing all 16 gotchas. Intro: "Critical issues from real-world Loom desktop development. Read these before building — they'll save you hours of debugging."
+Include a table of contents listing all 16 gotchas by number and title. Intro: "Critical issues from real-world Loom desktop development. Read these before building — they'll save you hours of debugging."
 
 **Step 2: Verify**
 
@@ -311,40 +405,119 @@ git commit -m "Extract gotchas to reference file for loom-desktop skill"
 
 Rewrite keeping:
 
-1. **Metadata** — Keep current description, it's good.
-2. **Intro + Why Desktop + Prerequisites** (lines 1-55) — Keep verbatim.
-3. **Architecture: Thin Bridge** (lines 56-115) — Keep verbatim including diagram and table.
-4. **Project Setup** (lines 116-134) — Keep, already concise with cross-refs.
-5. **The Conversation** (lines 135-211) — Keep verbatim.
-6. **Building It** intro — Keep 5 lines.
-7. **Shared Utilities** — 5-line summary listing the three helpers, cross-ref to `references/desktop-patterns.md#shared-utilities`.
-8. **Event Type Mapping** — Keep the mapping table (lines 330-343).
-9. **Patterns** — Replace with a "Patterns at a Glance" section: table listing each pattern with when to use and cross-ref. Include a 3-line summary of the Streaming pattern (the core one) since it's the default.
-10. **Desktop Features** — Replace with a summary table: feature name, 1-line description, cross-ref to `references/desktop-features.md#section`.
-11. **Distribution** — Replace with 5-line summary + cross-ref to `references/distribution.md`.
-12. **Gotchas** — Replace with numbered list of 1-line descriptions (title + core fix). Cross-ref to `references/gotchas.md` for full detail with code. Keep the top 3-4 most critical gotchas (env cleaning, stream buffering, macOS PATH, File.path) with 2-3 line detail since they bite everyone.
-13. **What to Generate** (lines 1980-2010) — Keep verbatim.
-14. **The Possibility Space** (lines 2011-2026) — Keep verbatim.
+1. **Metadata** — Rewrite the YAML front matter description. The current description (112 words) is near the limit and has some redundancy. Revised description:
+
+   ```yaml
+   description: >
+     Build native desktop applications powered by Claude Code CLI (`claude -p`),
+     using ElectroBun (Bun + system webview). The Bun process spawns Claude
+     subprocesses that read files, run commands, and stream structured output to
+     a native UI via typed RPC — no HTTP server, no auth, no SSE formatting. Use
+     for local AI tools with full filesystem access: file analyzers, code
+     assistants, document processors, research tools. Triggers: "desktop app with
+     Claude", "native Claude tool", "ElectroBun Claude app", "local AI agent",
+     "Claude on the dock". NOT for web apps (use loom) or direct Anthropic API.
+   ```
+
+   Changes from original: More concise (99 words from 112), removed redundant trigger phrases ("build a desktop app that uses Claude" vs "desktop app with Claude"), added evocative trigger "Claude on the dock", clearer "NOT for" section, added "no HTTP server, no auth, no SSE formatting" to emphasize what makes desktop different. Explicitly cross-refs loom for web.
+
+2. **Intro + Why Desktop + Prerequisites** (lines 14-55) — Keep verbatim. (~42 lines)
+
+3. **Architecture: Thin Bridge** (lines 56-115) — Keep verbatim including diagram and table. (~60 lines)
+
+4. **Project Setup** (lines 116-134) — Keep, already concise with cross-refs to electrobun-setup.md and cli-runtime-reference.md. (~18 lines)
+
+5. **The Conversation** (lines 135-211) — Keep verbatim. (~76 lines)
+
+6. **Building It** intro — Keep 3 lines (lines 212-216).
+
+7. **Shared Utilities** — 5-line summary listing the four helpers (`resolveClaudePath()`, `cleanEnv()`, `createStreamParser()`, `deriveAndSendRPC()`), with cross-ref to `references/desktop-patterns.md#shared-utilities`.
+
+8. **Event Type Mapping** — Keep the mapping table (lines 330-343). (~14 lines)
+
+9. **Patterns** — Replace with a "Patterns at a Glance" section: table listing each pattern with when to use and cross-ref. Include a 3-line summary of the Streaming pattern since it's the default. (~20 lines)
+
+   | Pattern | When to Use | Reference |
+   |---------|-------------|-----------|
+   | Synchronous | Quick extraction, classification | `references/desktop-patterns.md#pattern-1-synchronous` |
+   | Streaming | Primary pattern — tokens flow to UI | `references/desktop-patterns.md#pattern-2-streaming` |
+   | Conversational | Multi-turn with context retention | `references/desktop-patterns.md#pattern-3-conversational` |
+   | Background | Long tasks, tray minimization | `references/desktop-patterns.md#pattern-4-background` |
+
+10. **Desktop Features** — Replace with a summary table: feature name, 1-line description, cross-ref. (~15 lines)
+
+    | Feature | Description | Reference |
+    |---------|-------------|-----------|
+    | File Drag-and-Drop | Drop files for Claude to analyze (use FileReader, not File.path) | `references/desktop-features.md#file-drag-and-drop` |
+    | Native File Dialogs | Open/save files via Utils.openFileDialog() | `references/desktop-features.md#native-file-dialogs` |
+    | System Tray | Minimize during long tasks, show progress | `references/desktop-features.md#system-tray` |
+    | Native Menus | App menu bar with keyboard shortcuts | `references/desktop-features.md#native-menus` |
+    | File Access Config | Permission modes and tools lists for desktop | `references/desktop-features.md#local-file-access-configuration` |
+
+11. **Distribution** — Replace with 5-line summary + cross-ref to `references/distribution.md`. Key points: `bunx electrobun build --env=stable`, always DMG never ZIP, Claude CLI is an external dependency, code signing requires Apple Developer account. (~8 lines)
+
+12. **Gotchas** — Replace with numbered list of 1-line descriptions (title + core fix), ~16 entries. Keep the top 4 most critical gotchas with 2-3 lines of detail since they bite everyone: (1) env cleaning, (2) stream buffering, (3) macOS PATH, (4) File.path. Cross-ref to `references/gotchas.md` for full detail with code. (~45 lines)
+
+13. **What to Generate** (lines 1980-2010) — Keep verbatim. (~30 lines)
+
+14. **The Possibility Space** (lines 2011-2026) — Keep verbatim. (~15 lines)
+
+**Approximate line count breakdown:**
+
+| Section | Lines |
+|---------|-------|
+| Metadata | 13 |
+| Intro + Why Desktop + Prerequisites | 42 |
+| Architecture: Thin Bridge | 60 |
+| Project Setup | 18 |
+| The Conversation | 76 |
+| Building It + Shared Utils summary | 10 |
+| Event Type Mapping | 14 |
+| Patterns at a Glance | 20 |
+| Desktop Features table | 15 |
+| Distribution summary | 8 |
+| Gotchas condensed | 45 |
+| What to Generate | 30 |
+| The Possibility Space | 15 |
+| Blank lines, headings, markdown | ~50 |
+| **Total** | **~416** |
+
+This leaves ~84 lines of headroom below the 500-line limit.
 
 **Step 2: Verify line count**
 
 Run: `wc -l skills/loom-desktop/SKILL.md`
-Expected: 400-500 lines
+Expected: 390-470 lines
 
 **Step 3: Verify no broken references**
 
 ```bash
 grep -oP 'references/[a-z-]+\.md' skills/loom-desktop/SKILL.md | sort -u | while read f; do [ -f "skills/loom-desktop/$f" ] && echo "OK: $f" || echo "MISSING: $f"; done
 ```
-Expected: All OK
+Expected: All OK (should find: cli-runtime-reference.md, electrobun-setup.md, rpc-schema-reference.md, desktop-patterns.md, desktop-features.md, distribution.md, gotchas.md)
 
-**Step 4: Verify section coverage**
+**Step 4: Verify no orphan reference files**
 
-**Step 5: Commit**
+```bash
+ls skills/loom-desktop/references/*.md | while read f; do basename "$f" | xargs -I{} sh -c 'grep -q "{}" skills/loom-desktop/SKILL.md && echo "REFERENCED: {}" || echo "ORPHAN: {}"'; done
+```
+Expected: All REFERENCED
+
+**Step 5: Verify section coverage**
+
+Confirm all original major headings are either present in SKILL.md or have a cross-reference. Specifically verify:
+- Shared Utilities → desktop-patterns
+- deriveAndSendRPC → desktop-patterns
+- All 4 patterns → desktop-patterns (via table)
+- All 5 desktop features → desktop-features (via table)
+- All 7 distribution sections → distribution
+- All 16 gotchas → gotchas (1-line summaries in SKILL.md + cross-ref)
+
+**Step 6: Commit**
 
 ```bash
 git add skills/loom-desktop/SKILL.md
-git commit -m "Condense loom-desktop SKILL.md to ~470 lines, cross-ref extracted content"
+git commit -m "Condense loom-desktop SKILL.md to ~420 lines, cross-ref extracted content"
 ```
 
 ---
@@ -364,7 +537,8 @@ Expected:
 - `skills/loom/SKILL.md` < 500
 - `skills/loom-desktop/SKILL.md` < 500
 - All reference files exist
-- Total lines across all files per skill roughly match original totals (content moved not deleted)
+- Loom total: original ~2804 lines (SKILL 1632 + cli-ref 479 + oauth-ref 693) → new ~2800 lines (SKILL ~420 + cli-ref 479 + oauth-ref 693 + server-patterns ~1000)
+- Loom-desktop total: original ~3162 lines (SKILL 2026 + cli-ref 460 + electrobun 280 + rpc-schema 396) → new ~3100 lines (SKILL ~420 + cli-ref 460 + electrobun 280 + rpc-schema 396 + desktop-patterns ~750 + desktop-features ~270 + distribution ~220 + gotchas ~350)
 
 **Step 2: Verify reference integrity**
 
@@ -372,13 +546,25 @@ For each skill, check that every `references/*.md` path in SKILL.md resolves and
 
 **Step 3: Verify section headings**
 
-For each skill, confirm all original major headings are either present in SKILL.md or cross-referenced from it.
+For each skill, confirm all original major headings are either present in SKILL.md or cross-referenced from it. Use `grep '^##' original-backup` vs `grep '^##' SKILL.md` + `grep 'references/' SKILL.md` to verify coverage.
 
 **Step 4: Check TOC on large reference files**
 
-Any reference file over 300 lines should have a table of contents at the top.
+Any reference file over 300 lines should have a table of contents at the top. Expected to need TOCs:
+- `skills/loom/references/server-patterns.md` (~1000 lines) — needs TOC
+- `skills/loom-desktop/references/desktop-patterns.md` (~750 lines) — needs TOC
+- `skills/loom-desktop/references/gotchas.md` (~350 lines) — needs TOC
 
-**Step 5: Commit any fixes from verification**
+**Step 5: Verify metadata descriptions**
+
+Count words in both SKILL.md description blocks. Both should be under 120 words.
+
+```bash
+head -12 skills/loom/SKILL.md | sed -n '/description:/,/^---/p' | head -n -1 | wc -w
+head -13 skills/loom-desktop/SKILL.md | sed -n '/description:/,/^---/p' | head -n -1 | wc -w
+```
+
+**Step 6: Commit any fixes from verification**
 
 ```bash
 git add -A
@@ -395,3 +581,4 @@ git commit -m "Fix any issues found during verification"
 - Content is MOVED to references, never deleted
 - Every reference cross-link includes guidance on WHEN to read it
 - Reference files over 300 lines get a table of contents
+- Descriptions are REWRITTEN per best practices, not kept as-is
