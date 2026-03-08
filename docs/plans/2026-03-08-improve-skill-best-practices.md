@@ -196,21 +196,21 @@ git commit -m "Extract advanced patterns to reference file for loom skill"
 
 Rewrite the file with these sections:
 
-1. **Metadata** — Rewrite the YAML front matter description. The current description (61 words) is functional but can be improved for triggering. Revised description:
+1. **Metadata** — Rewrite the YAML front matter description. Descriptions should start with "Use when..." and describe only triggering conditions — never summarize what the skill does (that causes Claude to follow the description instead of reading the full skill). Revised description:
 
    ```yaml
    description: >
-     Build web applications powered by Claude Code CLI (`claude -p`) or the Agent
-     SDK as the runtime. A Node server spawns Claude processes that read files, run
-     commands, and stream structured output to a custom browser interface via
-     REST/SSE/WebSocket. Handles OAuth authentication, multi-user sessions,
-     streaming, and error recovery. Triggers: "build an app with Claude as backend",
-     "Claude-powered web app", "wrap claude -p in a server", "Claude as runtime",
-     "streaming Claude output to browser". NOT for direct Anthropic API usage,
-     simple chat replicas, or desktop apps (use loom-desktop).
+     Use when building a web application that needs Claude Code CLI (`claude -p`)
+     or the Agent SDK as its backend runtime — a server that spawns Claude
+     processes to power a custom browser interface. Triggers: "build an app that
+     uses Claude", "Claude as backend/runtime", "Claude-powered web app", "wrap
+     claude -p in a server", "streaming Claude output to browser", or any web app
+     needing Claude's agentic capabilities through a purpose-built interface. NOT
+     for direct Anthropic API usage, simple chat replicas, or desktop apps (use
+     loom-desktop).
    ```
 
-   Changes from original: Added "web applications" (distinguishes from desktop), added "streaming" and "error recovery" as capability signals, added more natural trigger phrases ("Claude-powered web app", "streaming Claude output to browser"), added explicit "NOT for desktop apps (use loom-desktop)" cross-reference. Still under 120 words.
+   Changes from original: Restructured to start with "Use when..." per skill description best practices. Lists triggering conditions and user phrases, not workflow steps. Added "Claude-powered web app" and "streaming Claude output to browser" as natural triggers. Added explicit "NOT for desktop apps (use loom-desktop)" cross-reference. ~85 words (well under 120).
 
 2. **Intro + Why This Matters + Architecture** (lines 11-81) — Keep verbatim. This is mental model content, not implementation detail. (~71 lines)
 
@@ -258,7 +258,10 @@ Rewrite the file with these sections:
 
    (~8 lines)
 
-9. **Error Handling** — Keep the mental model paragraph (3 failure modes: stderr, non-zero exit, malformed output, ~22 lines of prose). Remove the Error Surfacing Checklist code. Cross-ref:
+9. **Error Handling** — Keep the mental model paragraph (3 failure modes: stderr, non-zero exit, malformed output, ~22 lines of prose). Remove the Error Surfacing Checklist code. **Update stale internal reference:**
+    - Line 962: "Every pattern above handles errors inline" → "Every pattern in `references/server-patterns.md` handles errors inline"
+
+   Cross-ref:
 
    > See `references/server-patterns.md#error-surfacing-checklist` for the
    > three-channel checklist with code samples.
@@ -503,21 +506,21 @@ git commit -m "Extract gotchas to reference file for loom-desktop skill"
 
 Rewrite keeping:
 
-1. **Metadata** — Rewrite the YAML front matter description. The current description (112 words) is near the limit and has some redundancy. Revised description:
+1. **Metadata** — Rewrite the YAML front matter description. Descriptions should start with "Use when..." and describe only triggering conditions — never summarize what the skill does. Revised description:
 
    ```yaml
    description: >
-     Build native desktop applications powered by Claude Code CLI (`claude -p`),
-     using ElectroBun (Bun + system webview). The Bun process spawns Claude
-     subprocesses that read files, run commands, and stream structured output to
-     a native UI via typed RPC — no HTTP server, no auth, no SSE formatting. Use
-     for local AI tools with full filesystem access: file analyzers, code
-     assistants, document processors, research tools. Triggers: "desktop app with
-     Claude", "native Claude tool", "ElectroBun Claude app", "local AI agent",
-     "Claude on the dock". NOT for web apps (use loom) or direct Anthropic API.
+     Use when building a native desktop application that needs Claude Code CLI
+     (`claude -p`) as its runtime, using ElectroBun (Bun + system webview). The
+     Bun process spawns Claude directly via typed RPC — no HTTP server, no auth,
+     no SSE formatting. Triggers: "desktop app with Claude", "native Claude tool",
+     "ElectroBun Claude app", "local AI agent", "Claude on the dock", or any
+     desktop application needing Claude's agentic capabilities through a native
+     interface. NOT for web apps (use loom), direct Anthropic API, or chat
+     replicas.
    ```
 
-   Changes from original: More concise (99 words from 112), removed redundant trigger phrases ("build a desktop app that uses Claude" vs "desktop app with Claude"), added evocative trigger "Claude on the dock", clearer "NOT for" section, added "no HTTP server, no auth, no SSE formatting" to emphasize what makes desktop different. Explicitly cross-refs loom for web.
+   Changes from original: Restructured to start with "Use when..." per skill description best practices. Lists triggering conditions, not workflow steps. More concise (~88 words from 112), removed redundant triggers, added "Claude on the dock". Explicitly cross-refs loom for web.
 
 2. **Intro + Why Desktop + Prerequisites** (lines 14-55) — Keep verbatim. (~42 lines)
 
