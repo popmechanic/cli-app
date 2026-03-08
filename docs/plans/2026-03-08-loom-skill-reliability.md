@@ -98,7 +98,41 @@ In the Background Job pattern (~lines 600-604), update the result handler to det
   });
 ```
 
-**Step 5: Update the "Don't do this" for SSE**
+**Step 5: Rewrite the Persistent Session event handler**
+
+The Persistent Session pattern (~line 1092) raw-broadcasts every event:
+```typescript
+const parse = createStreamParser((event) => {
+    broadcast(event);
+});
+```
+
+With `--include-partial-messages` added (Step 1 item 4), this will broadcast both `stream_event` text deltas AND the `assistant` event containing the same complete text — causing duplicate text on any connected frontend.
+
+Replace with filtered broadcasting:
+```typescript
+const parse = createStreamParser((event) => {
+    if (event.type === "stream_event" && event.event?.delta?.text) {
+      broadcast({ type: "token", text: event.event.delta.text });
+    } else if (event.type === "assistant" && event.message?.content) {
+      for (const block of event.message.content) {
+        if (block.type === "tool_use") {
+          broadcast({ type: "tool", name: block.name, input: block.input });
+        }
+      }
+    } else if (event.type === "result") {
+      if (event.is_error) {
+        broadcast({ type: "error", message: event.result });
+      } else if (event.subtype === "error_max_turns") {
+        broadcast({ type: "warning", message: "Task incomplete — reached turn limit" });
+      } else {
+        broadcast({ type: "done" });
+      }
+    }
+});
+```
+
+**Step 6: Update the "Don't do this" for SSE**
 
 Replace the last bullet in the SSE "Don't do this" section (~line 472-474):
 ```
@@ -117,7 +151,7 @@ with:
   forward `tool_use` blocks from `assistant` events, or text will appear twice.
 ```
 
-**Step 6: Commit**
+**Step 7: Commit**
 
 ```bash
 cd /Users/marcusestes/Websites/loom/.worktrees/loom-skill-reliability
@@ -291,8 +325,8 @@ for streaming patterns.**
 | `system` | `{type:"system", subtype:"init", session_id, model, tools, ...}` | Session started | Optional (extract session_id) |
 | `stream_event` | `{type:"stream_event", event:{type:"content_block_delta", delta:{text:"..."}}}` | Incremental token (requires `--include-partial-messages`) | Yes (live text) |
 | `assistant` | `{type:"assistant", message:{content:[{type:"text",text:"..."}, {type:"tool_use",...}], stop_reason:"end_turn"|"tool_use"|null}}` | Complete message with text and/or tool calls | Tool use only (text already streamed via `stream_event`) |
-| `tool_result` | `{type:"tool_result", tool_name, content, is_error}` | Tool execution completed | Optional (show tool output or detect tool failures via `is_error`) |
-| `compact` | `{type:"compact"}` | Context window compacted (long sessions) | No (internal) |
+| `tool_result` | `{type:"tool_result", tool_name, content, is_error}` | Tool execution completed (only appears when tools are used) | Optional (show tool output or detect tool failures via `is_error`) |
+| `compact` | `{type:"compact"}` | Context window compacted (only in long sessions) | No (internal) |
 | `rate_limit_event` | `{type:"rate_limit_event", rate_limit_info:{status, utilization, rateLimitType, isUsingOverage, resetsAt}}` | Rate limit status update | No (but log it — if `utilization` is high, consider adding delays between spawns) |
 | `result` | `{type:"result", subtype:"success"|"error_max_turns", is_error, stop_reason:"end_turn"|"max_turns", session_id, num_turns, duration_ms, total_cost_usd}` | Session complete | Yes (done signal) |
 
@@ -306,6 +340,11 @@ for streaming patterns.**
 - `rate_limit_event` appears between the last `assistant` and `result` events.
   It's informational — no action needed unless `utilization` is consistently high,
   in which case add a small delay between concurrent spawns to avoid hitting limits.
+- `tool_result` and `compact` are carried forward from the existing SKILL.md
+  documentation. They were not re-verified (the 2026-03-08 tests used `--tools ""`
+  and short prompts, so neither event would have appeared). Their shapes are
+  presumed accurate — they almost certainly exist when tools are active or
+  context compaction triggers.
 
 **Extended thinking models** (e.g., haiku-4.5) work correctly with this
 approach. With `--include-partial-messages`, extended thinking models emit
