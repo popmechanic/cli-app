@@ -212,9 +212,9 @@ Rewrite the file with these sections:
 
    Changes from original: Restructured to start with "Use when..." per skill description best practices. Lists triggering conditions and user phrases, not workflow steps. Added "Claude-powered web app" and "streaming Claude output to browser" as natural triggers. Added explicit "NOT for desktop apps (use loom-desktop)" cross-reference. ~85 words (well under 120).
 
-2. **Intro + Why This Matters + Architecture** (lines 11-81) — Keep verbatim. This is mental model content, not implementation detail. (~71 lines)
+2. **Intro + Why This Matters + Architecture** (lines 11-81) — Keep, with one cross-reference update. This is mental model content, not implementation detail. Line 80 contains `(see "HTTP Hooks" section below)` — update to `(see references/advanced-patterns.md#http-hooks)` since HTTP Hooks moves out of SKILL.md. (~71 lines)
 
-3. **The Conversation** (lines 82-172) — Keep verbatim. Design guidance is the core skill. (~90 lines)
+3. **The Conversation** (lines 82-172) — Keep, with one cross-reference update. Design guidance is the core skill. Line 122 contains `(see "Handling File Uploads" below)` — update to `(see references/server-patterns.md#handling-file-uploads-and-drops)` since Handling File Uploads moves out of SKILL.md. (~90 lines)
 
 4. **Building It** — Section header + 2-line intro (lines 173-176). (~4 lines)
 
