@@ -219,7 +219,7 @@ Four helpers used by every pattern: `resolveClaudePath()` (find claude binary),
 `cleanEnv()` (remove nesting guards), `createStreamParser()` (buffer stdout
 into JSON lines), and `deriveAndSendRPC()` (map stream events to RPC messages).
 
-> See `references/desktop-patterns.md#shared-utilities` for the full
+> See `@references/desktop-patterns.md#shared-utilities` for the full
 > implementations with explanatory prose.
 
 ### Event Type Mapping
@@ -245,25 +245,25 @@ status heartbeats every 2 seconds.
 
 | Pattern | When to Use | Reference |
 |---------|-------------|-----------|
-| Synchronous | Quick extraction, classification | `references/desktop-patterns.md#pattern-1-synchronous` |
-| Streaming | Primary pattern — tokens flow to UI | `references/desktop-patterns.md#pattern-2-streaming` |
-| Conversational | Multi-turn with context retention | `references/desktop-patterns.md#pattern-3-conversational` |
-| Background | Long tasks, tray minimization | `references/desktop-patterns.md#pattern-4-background` |
+| Synchronous | Quick extraction, classification | `@references/desktop-patterns.md#pattern-1-synchronous` |
+| Streaming | Primary pattern — tokens flow to UI | `@references/desktop-patterns.md#pattern-2-streaming` |
+| Conversational | Multi-turn with context retention | `@references/desktop-patterns.md#pattern-3-conversational` |
+| Background | Long tasks, tray minimization | `@references/desktop-patterns.md#pattern-4-background` |
 
-> Read `references/desktop-patterns.md` when implementing a specific
+> Read `@references/desktop-patterns.md` when implementing a specific
 > interaction pattern — it has the complete Bun-side and webview-side code.
 
 ### Desktop Features
 
 | Feature | Description | Reference |
 |---------|-------------|-----------|
-| File Drag-and-Drop | Drop files for Claude to analyze (use FileReader, not File.path) | `references/desktop-features.md#file-drag-and-drop` |
-| Native File Dialogs | Open/save files via Utils.openFileDialog() | `references/desktop-features.md#native-file-dialogs` |
-| System Tray | Minimize during long tasks, show progress | `references/desktop-features.md#system-tray` |
-| Native Menus | App menu bar with keyboard shortcuts | `references/desktop-features.md#native-menus` |
-| File Access Config | Permission modes and tools lists for desktop | `references/desktop-features.md#local-file-access-configuration` |
+| File Drag-and-Drop | Drop files for Claude to analyze (use FileReader, not File.path) | `@references/desktop-features.md#file-drag-and-drop` |
+| Native File Dialogs | Open/save files via Utils.openFileDialog() | `@references/desktop-features.md#native-file-dialogs` |
+| System Tray | Minimize during long tasks, show progress | `@references/desktop-features.md#system-tray` |
+| Native Menus | App menu bar with keyboard shortcuts | `@references/desktop-features.md#native-menus` |
+| File Access Config | Permission modes and tools lists for desktop | `@references/desktop-features.md#local-file-access-configuration` |
 
-> Read `references/desktop-features.md` when adding native platform features
+> Read `@references/desktop-features.md` when adding native platform features
 > to your app.
 
 ### Distribution
@@ -273,34 +273,34 @@ never a ZIP (zipping strips executable permissions). Claude CLI is an external
 dependency — don't bundle it. For clean distribution without Gatekeeper warnings,
 set up code signing with an Apple Developer account.
 
-> Read `references/distribution.md` for the complete build, signing, DMG icon,
+> Read `@references/distribution.md` for the complete build, signing, DMG icon,
 > and auto-update setup.
 
 ### Gotchas
 
-Critical issues from real-world development. The top 4 bite everyone:
+Critical issues from real-world development. These 4 bite everyone:
 
-1. **Env cleaning** — Remove `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT`, but never `CLAUDE_CODE_OAUTH_TOKEN`. Use `cleanEnv()`.
-2. **Stream buffering** — TCP chunks split JSON lines. Use `createStreamParser`, never raw `split("\n")`.
-3. **macOS PATH** — GUI apps don't inherit shell PATH. Use `resolveClaudePath()` at startup.
-4. **File.path** — Doesn't exist in system webviews. Use `FileReader.readAsText()` via RPC instead.
+- **#1 Env cleaning** — Remove `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT`, but never `CLAUDE_CODE_OAUTH_TOKEN`. Use `cleanEnv()`.
+- **#2 Stream buffering** — TCP chunks split JSON lines. Use `createStreamParser`, never raw `split("\n")`.
+- **#13 macOS PATH** — GUI apps don't inherit shell PATH. Use `resolveClaudePath()` at startup.
+- **#12 File.path** — Doesn't exist in system webviews. Use `FileReader.readAsText()` via RPC instead.
 
-All 16 gotchas with full detail:
+The remaining 12 gotchas (numbers match `@references/gotchas.md`):
 
-5. Extended thinking models — handle both `assistant` text blocks and `stream_event` deltas
-6. RPC request timeout — return `taskId` immediately, before Claude finishes
-7. ElectroBun version status — v1.15.1, check known platform issues
-8. System webview differences — WKWebView/WebView2/WebKit2GTK behavior varies
-9. Spawned Claude inherits user hooks — use `--setting-sources ""` to skip settings
-10. Missing index.html — ElectroBun doesn't auto-generate it, create manually
-11. stderr is a ReadableStream — read it once into a buffer, don't consume twice
-12. `dontAsk` blocks reads outside project dir — use `bypassPermissions` for desktop
-13. TextDecoder with `{ stream: true }` — prevents multi-byte UTF-8 corruption
-14. ZIP strips executable permissions — always use DMG
-15. No cross-compilation — build on the target platform
-16. Process crash recovery — retry transient failures with backoff
+- #3 TextDecoder with `{ stream: true }` — prevents multi-byte UTF-8 corruption
+- #4 `dontAsk` blocks reads outside project dir — use `bypassPermissions` for desktop
+- #5 Extended thinking models — handle both `assistant` text blocks and `stream_event` deltas
+- #6 RPC request timeout — return `taskId` immediately, before Claude finishes
+- #7 ElectroBun version status — v1.15.1, check known platform issues
+- #8 System webview differences — WKWebView/WebView2/WebKit2GTK behavior varies
+- #9 Spawned Claude inherits user hooks — use `--setting-sources ""` to skip settings
+- #10 Missing index.html — ElectroBun doesn't auto-generate it, create manually
+- #11 stderr is a ReadableStream — read it once into a buffer, don't consume twice
+- #14 ZIP strips executable permissions — always use DMG
+- #15 No cross-compilation — build on the target platform
+- #16 Process crash recovery — retry transient failures with backoff
 
-> Read `references/gotchas.md` for full explanations, code samples, and fixes
+> Read `@references/gotchas.md` for full explanations, code samples, and fixes
 > for all 16 issues.
 
 ## What to Generate
